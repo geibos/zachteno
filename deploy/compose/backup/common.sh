@@ -37,7 +37,12 @@ mark() { # mark <name> success|failure <details>
 }
 
 # Push-мониторинг (Uptime Kuma, Healthchecks и т. п.): отсутствие push — тревога.
+# PUSH_NETWORK — если монитор доступен только внутри docker-сети, push идёт
+# из одноразового контейнера в ней, и в URL можно писать имя контейнера.
 push() { # push <url-variable-name> <message>
   local url="${!1:-}"; [ -n "$url" ] || return 0
-  curl -fsS -m 10 -G "$url" --data-urlencode "status=up" --data-urlencode "msg=$2" >/dev/null || true
+  local client=(curl)
+  [ -n "${PUSH_NETWORK:-}" ] && client=(docker run --rm --network "$PUSH_NETWORK" curlimages/curl:8.17.0)
+  "${client[@]}" -fsS -m 10 -G "$url" --data-urlencode "status=up" --data-urlencode "msg=$2" >/dev/null \
+    || echo "push в мониторинг не прошёл" >&2
 }

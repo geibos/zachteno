@@ -18,7 +18,7 @@
    - адрес: `PUBLIC_URL` (например, `https://tests.example.edu`), `HTTP_BIND`/`HTTP_PORT` (куда опубликовать порт приложения, по умолчанию `127.0.0.1:8080`), `TRUSTED_PROXIES` (подсеть, откуда приходит прокси — нужна для `X-Forwarded-For`);
    - база: `POSTGRES_PASSWORD`, `ZACHTENO_OWNER_PASSWORD`, `ZACHTENO_APP_PASSWORD`;
    - хранилища: `GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `BACKUP_GARAGE_RPC_SECRET`, `BACKUP_GARAGE_ADMIN_TOKEN`, `BACKUP_S3_KEY_ID`, `BACKUP_S3_SECRET` (секреты — `openssl rand -hex 32`, ключи Garage — `GK` + 24 hex и 64 hex);
-   - бэкапы: `BACKUP_DATA_DIR` (каталог на **другом физическом диске**), `BACKUP_MOUNTPOINT` (необязательно: точка монтирования этого диска), `BACKUP_PUSH_URL`, `RESTORE_PUSH_URL` (необязательно: push-мониторинг);
+   - бэкапы: `BACKUP_DATA_DIR` (каталог на **другом физическом диске**), `BACKUP_MOUNTPOINT` (необязательно: точка монтирования этого диска), `BACKUP_PUSH_URL`, `RESTORE_PUSH_URL` (необязательно: push-мониторинг), `PUSH_NETWORK` (необязательно: docker-сеть, из которой виден монитор);
    - приложение: `PASSWORD_PEPPERS`, `SIGNAL_HMAC_KEY`, `MAIL_FROM`, `MAIL_MODE=smtp` и `SMTP_*`, при желании `YANDEX_CLIENT_ID/SECRET`.
 3. Каталоги и метка диска бэкапов: `mkdir -p data/asn "$BACKUP_DATA_DIR/garage-data" && touch "$BACKUP_DATA_DIR/.zachteno-backup-volume"`.
 4. `docker compose build && docker compose up -d postgres garage backup-garage`, затем инициализация хранилищ:
