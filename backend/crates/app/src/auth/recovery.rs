@@ -109,7 +109,7 @@ async fn send_reset(state: &AppState, row: LoginRow) -> ApiResult<()> {
         .fetch_one(&mut *tx)
         .await?;
     let letter = Email::ResetPassword { to: address, name: row.display_name, token };
-    mail::queue(&mut *tx, &letter).await?;
+    mail::queue(&mut *tx, &letter, state.clock.now()).await?;
     tx.commit().await?;
     Ok(())
 }

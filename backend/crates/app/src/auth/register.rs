@@ -120,7 +120,7 @@ pub(crate) async fn send_verification(
 ) -> ApiResult<()> {
     let token = onetime::issue(&mut *tx, Purpose::VerifyEmail, user_id, state.clock.now()).await?;
     let letter = Email::VerifyAddress { to: email.to_owned(), name: name.to_owned(), token };
-    mail::queue(&mut *tx, &letter).await?;
+    mail::queue(&mut *tx, &letter, state.clock.now()).await?;
     Ok(())
 }
 

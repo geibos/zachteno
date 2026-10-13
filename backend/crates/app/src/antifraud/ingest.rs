@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use sqlx::PgConnection;
 use sqlx::types::Json as SqlJson;
+use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -149,7 +150,7 @@ pub(crate) async fn submit(
     input.validate()?;
     let mut tx = state.db.begin().await?;
     record(&state, &mut tx, user.id, (&input, ip)).await?;
-    enqueue_recompute(&mut tx, user.id).await?;
+    enqueue_recompute(&mut tx, user.id, state.clock.now()).await?;
     tx.commit().await?;
     state.jobs_wake.notify_waiters();
     Ok(StatusCode::NO_CONTENT)
@@ -158,7 +159,11 @@ pub(crate) async fn submit(
 /// Ставит пересчёт связей пользователя, если такой ещё не ждёт в очереди.
 ///
 /// cancel-safe: yes — в транзакции вызывающего.
-async fn enqueue_recompute(tx: &mut PgConnection, user_id: Uuid) -> ApiResult<()> {
+async fn enqueue_recompute(
+    tx: &mut PgConnection,
+    user_id: Uuid,
+    now: OffsetDateTime,
+) -> ApiResult<()> {
     let pending: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM jobs WHERE kind = 'antifraud_recompute' AND done_at IS NULL AND payload->>'user_id' = $1::text)",
     )
@@ -170,6 +175,7 @@ async fn enqueue_recompute(tx: &mut PgConnection, user_id: Uuid) -> ApiResult<()
             &mut *tx,
             JobKind::AntifraudRecompute,
             &serde_json::json!({ "user_id": user_id }),
+            now,
         )
         .await?;
     }

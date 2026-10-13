@@ -50,6 +50,7 @@ async fn same_device_in_other_browser_is_linked(db: PgPool) {
     let (mut first, first_id) = testing::register(&state, "a@example.com").await;
     let (mut second, second_id) = testing::register(&state, "b@example.com").await;
     signal(&mut first, "marker-chrome", device("apple-m3")).await;
+    state.clock.advance(Duration::hours(3));
     signal(&mut second, "marker-firefox", device("apple-m3")).await;
     assert_eq!(
         level(&state, first_id, second_id).await.as_deref(),
@@ -65,6 +66,7 @@ async fn common_device_fingerprint_is_low(db: PgPool) {
     for index in 0..5 {
         let (mut client, user_id) =
             testing::register(&state, &format!("class{index}@example.com")).await;
+        state.clock.advance(Duration::hours(1));
         signal(&mut client, &format!("marker-{index}"), device("lab-gpu")).await;
         ids.push(user_id);
     }
@@ -78,10 +80,11 @@ async fn common_device_fingerprint_is_low(db: PgPool) {
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
 async fn identical_free_text_links_different_devices(db: PgPool) {
     let state = testing::state(db);
-    let mut room = Classroom::new(&state, 0, json!({})).await;
+    let mut room = Classroom::new(&state, 1, json!({})).await;
     let (mut other, other_id) = testing::register(&state, "twin@example.com").await;
     let _joined = other.post(&format!("/api/invites/{}/join", room.invite_token), json!({})).await;
     signal(&mut room.student, "marker-1", device("gpu-1")).await;
+    state.clock.advance(Duration::hours(3));
     signal(&mut other, "marker-2", device("gpu-2")).await;
     let _answers = sqlx::query(
         "WITH q AS (INSERT INTO questions (test_id, position, kind, body) VALUES ($1::uuid, 99, 'free_text', '?') RETURNING id),

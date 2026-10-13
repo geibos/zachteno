@@ -85,4 +85,11 @@ pub(crate) async fn drain(state: &AppState) {
     while let Ok(Some(job)) = jobs::claim(state, Some(JobKind::AntifraudRecompute)).await {
         process(state, &job).await;
     }
+    let failed: Option<String> =
+        sqlx::query_scalar("SELECT last_error FROM jobs WHERE last_error IS NOT NULL LIMIT 1")
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+    assert!(failed.is_none(), "задача антифрода упала: {failed:?}");
 }

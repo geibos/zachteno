@@ -5,7 +5,7 @@ use std::time::Duration as StdDuration;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value as Json;
 use sqlx::{FromRow, PgExecutor};
-use time::Duration;
+use time::{Duration, OffsetDateTime};
 
 use crate::state::AppState;
 
@@ -34,10 +34,12 @@ pub(crate) async fn enqueue<'conn>(
     executor: impl PgExecutor<'conn>,
     kind: JobKind,
     payload: &(impl Serialize + Sync),
+    run_at: OffsetDateTime,
 ) -> Result<(), sqlx::Error> {
-    let _inserted = sqlx::query("INSERT INTO jobs (kind, payload) VALUES ($1, $2)")
+    let _inserted = sqlx::query("INSERT INTO jobs (kind, payload, run_at) VALUES ($1, $2, $3)")
         .bind(kind.name())
         .bind(serde_json::to_value(payload).map_err(|error| sqlx::Error::Encode(error.into()))?)
+        .bind(run_at)
         .execute(executor)
         .await?;
     Ok(())

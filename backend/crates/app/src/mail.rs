@@ -65,8 +65,9 @@ impl Email {
 pub(crate) async fn queue<'conn>(
     executor: impl sqlx::PgExecutor<'conn>,
     email: &Email,
+    now: time::OffsetDateTime,
 ) -> Result<(), sqlx::Error> {
-    jobs::enqueue(executor, JobKind::Email, email).await
+    jobs::enqueue(executor, JobKind::Email, email, now).await
 }
 
 /// Способ доставки.
