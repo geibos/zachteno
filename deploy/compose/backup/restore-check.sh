@@ -27,5 +27,5 @@ docker exec -u postgres "$name" bash -c '
 ' || fail "восстановление или контрольный запрос"
 
 mark restore_check success "контрольный запрос выполнен"
-push UPTIME_PUSH_RESTORE "ok"
+push RESTORE_PUSH_URL "ok"
 echo "проверка восстановления пройдена"

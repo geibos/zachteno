@@ -1,4 +1,4 @@
-# Основное хранилище картинок: метаданные и данные на SSD.
+# Хранилище бэкапов: метаданные — в data/ рядом с compose (быстрый диск), данные — в BACKUP_DATA_DIR (отдельный диск).
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"
 db_engine = "lmdb"

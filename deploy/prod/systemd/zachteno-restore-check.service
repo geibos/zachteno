@@ -1,6 +1,0 @@
-[Unit]
-Description=Зачтено: еженедельная проверка восстановления из бэкапа → Uptime Kuma
-
-[Service]
-Type=oneshot
-ExecStart=%h/zachteno/src/deploy/prod/backup/restore-check.sh

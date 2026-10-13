@@ -1,5 +1,6 @@
-# «Зачтено» на домашнем сервере: ~/zachteno (design D13, D16).
-# Наружу — только app через Traefik (proxy); база и хранилища — во внутренних сетях.
+# «Зачтено»: приложение, PostgreSQL с WAL-G, Garage для картинок и отдельный Garage для бэкапов.
+# Наружу — только app (за любым TLS-прокси); база и хранилища — во внутренних сетях.
+# Особенности конкретного стенда (метки прокси, внешние сети) — в docker-compose.override.yml рядом.
 name: zachteno
 
 x-garage-env: &garage-env
@@ -23,9 +24,11 @@ services:
     container_name: zachteno-app
     restart: unless-stopped
     # Только то, что нужно приложению: ни пароля суперпользователя Postgres, ни ключей бэкапов.
+    ports:
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
     environment:
       BIND: 0.0.0.0:8080
-      # Метрики только внутри контейнера: в proxy их видели бы все сервисы.
+      # Метрики только внутри контейнера: в общей сети прокси их видели бы все сервисы.
       METRICS_BIND: 127.0.0.1:9100
       PASSWORD_PEPPERS: ${PASSWORD_PEPPERS:?}
       SIGNAL_HMAC_KEY: ${SIGNAL_HMAC_KEY:?}
@@ -33,15 +36,15 @@ services:
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?}
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?}
       MAIL_MODE: ${MAIL_MODE:-smtp}
-      MAIL_FROM: ${MAIL_FROM:-Зачтено <no-reply@zachteno.example.org>}
-      SMTP_HOST: ${SMTP_HOST:-postbox.cloud.yandex.net}
+      MAIL_FROM: ${MAIL_FROM:?}
+      SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       YANDEX_CLIENT_ID: ${YANDEX_CLIENT_ID:-}
       YANDEX_CLIENT_SECRET: ${YANDEX_CLIENT_SECRET:-}
-      PUBLIC_URL: https://zachteno.example.org
-      TRUSTED_PROXIES: 172.30.90.0/24
+      PUBLIC_URL: ${PUBLIC_URL:?}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       DATABASE_URL: postgres://zachteno_app:${ZACHTENO_APP_PASSWORD:?}@postgres:5432/zachteno
       MIGRATION_DATABASE_URL: postgres://zachteno_owner:${ZACHTENO_OWNER_PASSWORD:?}@postgres:5432/zachteno
       S3_ENDPOINT: http://garage:3900
@@ -51,18 +54,10 @@ services:
       RUST_LOG: info
     volumes:
       - ./data/asn:/data/asn:ro
-    networks: [proxy, internal]
+    networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }
       garage: { condition: service_started }
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=proxy
-      - traefik.http.routers.zachteno.rule=Host(`zachteno.example.org`)
-      - traefik.http.routers.zachteno.entrypoints=${TRAEFIK_ENTRYPOINT:-https}
-      - traefik.http.routers.zachteno.tls=true
-      - traefik.http.routers.zachteno.middlewares=secure-headers@file
-      - traefik.http.services.zachteno.loadbalancer.server.port=8080
 
   postgres:
     image: zachteno-postgres:latest
@@ -101,7 +96,7 @@ services:
     restart: unless-stopped
     environment: *garage-env
     volumes:
-      - ./src/deploy/prod/garage.toml:/etc/garage.toml:ro
+      - ./src/deploy/compose/garage.toml:/etc/garage.toml:ro
       - ./data/garage-meta:/var/lib/garage/meta
       - ./data/garage-data:/var/lib/garage/data
     networks: [internal, backup]
@@ -114,9 +109,9 @@ services:
       GARAGE_RPC_SECRET: ${BACKUP_GARAGE_RPC_SECRET:?}
       GARAGE_ADMIN_TOKEN: ${BACKUP_GARAGE_ADMIN_TOKEN:?}
     volumes:
-      - ./src/deploy/prod/backup-garage.toml:/etc/garage.toml:ro
+      - ./src/deploy/compose/backup-garage.toml:/etc/garage.toml:ro
       - ./data/backup-garage-meta:/var/lib/garage/meta
-      - /mnt/backup/backups/zachteno/garage-data:/var/lib/garage/data
+      - ${BACKUP_DATA_DIR:?}/garage-data:/var/lib/garage/data
     networks: [backup]
 
   backup:
@@ -141,11 +136,9 @@ services:
       RCLONE_CONFIG_VAULT_ACCESS_KEY_ID: ${BACKUP_S3_KEY_ID:?}
       RCLONE_CONFIG_VAULT_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET:?}
     volumes:
-      - ./src/deploy/prod/backup:/backup:ro
+      - ./src/deploy/compose/backup:/backup:ro
     networks: [internal, backup]
 
 networks:
-  proxy:
-    external: true
   internal:
   backup:

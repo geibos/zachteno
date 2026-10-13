@@ -1,4 +1,4 @@
-# Хранилище бэкапов: метаданные на SSD, данные на внешнем HDD (/mnt/backup).
+# Основное хранилище картинок.
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"
 db_engine = "lmdb"

@@ -1,6 +1,0 @@
-[Unit]
-Description=Зачтено: ежедневный бэкап (WAL-G base backup + зеркало картинок) → Uptime Kuma
-
-[Service]
-Type=oneshot
-ExecStart=%h/zachteno/src/deploy/prod/backup/run-backup.sh

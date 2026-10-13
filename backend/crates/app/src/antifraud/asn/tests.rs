@@ -2,20 +2,20 @@ use std::net::IpAddr;
 
 use super::{AsnTable, timezone_mismatch};
 
-const SAMPLE: &str = "94.19.0.0\t94.19.255.255\t35807\tRU\tSkyNet Networks\n\
-                      5.188.0.0\t5.188.255.255\t49505\tRU\tSelectel Hosting\n\
+const SAMPLE: &str = "198.51.100.0\t198.51.100.255\t64500\tRU\tExample Home ISP\n\
+                      192.0.2.0\t192.0.2.255\t64501\tRU\tExample Cloud Hosting\n\
                       203.0.113.0\t203.0.113.255\t0\tNone\tNot routed\n";
 
 #[test]
 fn lookup_finds_asn_and_hosting_flag() {
     let table = AsnTable::from_lines(SAMPLE);
-    let home = table.lookup("203.0.113.10".parse::<IpAddr>().unwrap()).unwrap();
+    let home = table.lookup("198.51.100.42".parse::<IpAddr>().unwrap()).unwrap();
     assert_eq!(
         (home.asn, home.country.as_str(), home.hosting),
-        (35807, "RU", false),
+        (64500, "RU", false),
         "домашний провайдер"
     );
-    let vps = table.lookup("5.188.10.1".parse::<IpAddr>().unwrap()).unwrap();
+    let vps = table.lookup("192.0.2.10".parse::<IpAddr>().unwrap()).unwrap();
     assert!(vps.hosting, "хостинг");
     assert_eq!(table.lookup("203.0.113.5".parse::<IpAddr>().unwrap()), None, "не маршрутизируется");
     assert_eq!(table.lookup("8.8.8.8".parse::<IpAddr>().unwrap()), None, "нет в таблице");

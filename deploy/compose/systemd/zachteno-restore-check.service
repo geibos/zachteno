@@ -1,0 +1,7 @@
+[Unit]
+Description=Зачтено: еженедельная проверка восстановления из бэкапа → push-мониторинг
+
+[Service]
+Environment=ZACHTENO_HOME=%h/zachteno
+Type=oneshot
+ExecStart=%h/zachteno/src/deploy/compose/backup/restore-check.sh

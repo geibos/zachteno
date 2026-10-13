@@ -113,7 +113,7 @@ fn optional(name: &str, default: &str) -> String {
 }
 
 fn http_from_env() -> anyhow::Result<HttpConfig> {
-    let proxies = optional("TRUSTED_PROXIES", "172.30.90.0/24");
+    let proxies = optional("TRUSTED_PROXIES", "");
     Ok(HttpConfig {
         bind: optional("BIND", "0.0.0.0:8080").parse()?,
         metrics_bind: optional("METRICS_BIND", "127.0.0.1:9100").parse()?,
@@ -182,7 +182,7 @@ fn storage_from_env() -> anyhow::Result<StorageConfig> {
 }
 
 fn mail_from_env() -> anyhow::Result<MailConfig> {
-    let from = optional("MAIL_FROM", "Зачтено <no-reply@zachteno.example.org>");
+    let from = optional("MAIL_FROM", "Зачтено <no-reply@localhost>");
     match optional("MAIL_MODE", "directory").as_str() {
         "smtp" => Ok(MailConfig::Smtp {
             host: required("SMTP_HOST")?,

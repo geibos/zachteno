@@ -17,5 +17,5 @@ compose run --rm -T backup sh -c "rclone lsf --dirs-only vault:attachments-histo
   if [ \"\$dir\" \\< \"$cutoff\" ]; then rclone purge \"vault:attachments-history/\$dir\"; fi; done" || fail "очистка истории картинок"
 
 mark backup success "base backup + зеркало картинок $stamp"
-push UPTIME_PUSH_BACKUP "ok $stamp"
+push BACKUP_PUSH_URL "ok $stamp"
 echo "бэкап готов: $stamp"
