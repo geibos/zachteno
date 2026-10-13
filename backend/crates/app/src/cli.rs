@@ -36,6 +36,12 @@ enum Command {
         #[arg(long, default_value = "Администратор")]
         name: String,
     },
+    /// Проверка живости для Docker healthcheck (без окружения).
+    Healthcheck {
+        /// Адрес проверки.
+        #[arg(long, default_value = "http://127.0.0.1:8080/health/live")]
+        url: String,
+    },
     /// Загрузить демонстрационный курс ПДД из каталога `etspring/pdd_russia`.
     SeedPdd {
         /// Каталог с клоном набора.
@@ -52,12 +58,18 @@ pub(crate) async fn run() -> anyhow::Result<()> {
     if matches!(cli.command, Command::Openapi) {
         return print_openapi();
     }
+    if let Command::Healthcheck { url } = &cli.command {
+        let response = reqwest::Client::new().get(url).timeout(std::time::Duration::from_secs(3)).send().await?;
+        anyhow::ensure!(response.status().is_success(), "статус {}", response.status());
+        return Ok(());
+    }
     init_tracing();
     let config = Config::from_env()?;
     match cli.command {
         Command::Serve => serve(config).await,
         Command::Migrate => database::migrate(&config).await,
         Command::Openapi => print_openapi(),
+        Command::Healthcheck { .. } => Ok(()),
         Command::CreateSuperuser { email, name } => create_superuser(config, &email, &name).await,
         Command::SeedPdd { dir, owner } => seed_pdd(config, &dir, &owner).await,
     }
@@ -111,8 +123,16 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     database::migrate(&config).await?;
     let db = database::connect(&config).await?;
     let bind = config.http.bind;
+    let metrics_bind = config.http.metrics_bind;
     let state = AppState::new(config, db)?;
     spawn_workers(&state);
+    let metrics_listener = TcpListener::bind(metrics_bind).await.with_context(|| format!("bind {metrics_bind}"))?;
+    let metrics_app = crate::ops::metrics_router(state.clone());
+    drop(tokio::spawn(async move {
+        if let Err(error) = axum::serve(metrics_listener, metrics_app).await {
+            tracing::error!(%error, "сервер метрик остановлен");
+        }
+    }));
     let listener = TcpListener::bind(bind).await.with_context(|| format!("bind {bind}"))?;
     tracing::info!(%bind, "сервер запущен");
     axum::serve(listener, http::app(state).into_make_service_with_connect_info::<SocketAddr>())

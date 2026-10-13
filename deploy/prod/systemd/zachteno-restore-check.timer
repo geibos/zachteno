@@ -1,0 +1,9 @@
+[Unit]
+Description=Еженедельная проверка восстановления «Зачтено»
+
+[Timer]
+OnCalendar=Sun *-*-* 05:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

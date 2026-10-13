@@ -1,0 +1,137 @@
+# «Зачтено» на домашнем сервере: ~/zachteno (design D13, D16).
+# Наружу — только app через Traefik (proxy); база и хранилища — во внутренних сетях.
+name: zachteno
+
+x-garage-env: &garage-env
+  GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?}
+  GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:?}
+
+x-walg-env: &walg-env
+  WALG_S3_PREFIX: s3://pg-backups/zachteno
+  AWS_ENDPOINT: http://backup-garage:3900
+  AWS_REGION: garage
+  AWS_S3_FORCE_PATH_STYLE: "true"
+  AWS_ACCESS_KEY_ID: ${BACKUP_S3_KEY_ID:?}
+  AWS_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET:?}
+  WALG_COMPRESSION_METHOD: zstd
+  PGHOST: /var/run/postgresql
+
+services:
+  app:
+    image: zachteno-app:latest
+    build: { context: ./src, dockerfile: deploy/docker/app.Dockerfile }
+    container_name: zachteno-app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BIND: 0.0.0.0:8080
+      METRICS_BIND: 0.0.0.0:9100
+      PUBLIC_URL: https://zachteno.example.org
+      TRUSTED_PROXIES: 172.30.90.0/24
+      DATABASE_URL: postgres://zachteno_app:${ZACHTENO_APP_PASSWORD:?}@postgres:5432/zachteno
+      MIGRATION_DATABASE_URL: postgres://zachteno_owner:${ZACHTENO_OWNER_PASSWORD:?}@postgres:5432/zachteno
+      S3_ENDPOINT: http://garage:3900
+      S3_REGION: garage
+      S3_BUCKET: attachments
+      ASN_DB_PATH: /data/asn/ip2asn-v4.tsv
+      RUST_LOG: info
+    volumes:
+      - ./data/asn:/data/asn:ro
+    networks: [proxy, internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+      garage: { condition: service_started }
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.zachteno.rule=Host(`zachteno.example.org`)
+      - traefik.http.routers.zachteno.entrypoints=${TRAEFIK_ENTRYPOINT:-https}
+      - traefik.http.routers.zachteno.tls=true
+      - traefik.http.routers.zachteno.middlewares=secure-headers@file
+      - traefik.http.services.zachteno.loadbalancer.server.port=8080
+
+  postgres:
+    image: zachteno-postgres:latest
+    build: { context: ./src, dockerfile: deploy/docker/postgres.Dockerfile }
+    container_name: zachteno-postgres
+    restart: unless-stopped
+    environment:
+      <<: *walg-env
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: postgres
+      ZACHTENO_OWNER_PASSWORD: ${ZACHTENO_OWNER_PASSWORD:?}
+      ZACHTENO_APP_PASSWORD: ${ZACHTENO_APP_PASSWORD:?}
+    command:
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=wal-g wal-push %p
+      - -c
+      - archive_timeout=300
+      - -c
+      - wal_level=replica
+    volumes:
+      - ./src/deploy/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+      - ./data/postgres:/var/lib/postgresql/data
+    networks: [internal, backup]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 30
+
+  garage:
+    image: dxflrs/garage:v2.4.1
+    container_name: zachteno-garage
+    restart: unless-stopped
+    environment: *garage-env
+    volumes:
+      - ./src/deploy/prod/garage.toml:/etc/garage.toml:ro
+      - ./data/garage-meta:/var/lib/garage/meta
+      - ./data/garage-data:/var/lib/garage/data
+    networks: [internal, backup]
+
+  backup-garage:
+    image: dxflrs/garage:v2.4.1
+    container_name: zachteno-backup-garage
+    restart: unless-stopped
+    environment:
+      GARAGE_RPC_SECRET: ${BACKUP_GARAGE_RPC_SECRET:?}
+      GARAGE_ADMIN_TOKEN: ${BACKUP_GARAGE_ADMIN_TOKEN:?}
+    volumes:
+      - ./src/deploy/prod/backup-garage.toml:/etc/garage.toml:ro
+      - ./data/backup-garage-meta:/var/lib/garage/meta
+      - /mnt/backup/backups/zachteno/garage-data:/var/lib/garage/data
+    networks: [backup]
+
+  backup:
+    image: zachteno-backup:latest
+    build: { context: ./src, dockerfile: deploy/docker/backup.Dockerfile }
+    profiles: [tools]
+    environment:
+      <<: *walg-env
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      RCLONE_CONFIG_MAIN_TYPE: s3
+      RCLONE_CONFIG_MAIN_PROVIDER: Other
+      RCLONE_CONFIG_MAIN_ENDPOINT: http://garage:3900
+      RCLONE_CONFIG_MAIN_REGION: garage
+      RCLONE_CONFIG_MAIN_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?}
+      RCLONE_CONFIG_MAIN_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?}
+      RCLONE_CONFIG_VAULT_TYPE: s3
+      RCLONE_CONFIG_VAULT_PROVIDER: Other
+      RCLONE_CONFIG_VAULT_ENDPOINT: http://backup-garage:3900
+      RCLONE_CONFIG_VAULT_REGION: garage
+      RCLONE_CONFIG_VAULT_ACCESS_KEY_ID: ${BACKUP_S3_KEY_ID:?}
+      RCLONE_CONFIG_VAULT_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET:?}
+    volumes:
+      - ./src/deploy/prod/backup:/backup:ro
+    networks: [internal, backup]
+
+networks:
+  proxy:
+    external: true
+  internal:
+  backup:

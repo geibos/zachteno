@@ -1,0 +1,7 @@
+[Unit]
+Description=Зачтено: обновление базы IP → ASN (iptoasn.com, PDDL)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/zachteno
+ExecStart=/bin/sh -c 'curl -fsSL https://iptoasn.com/data/ip2asn-v4.tsv.gz | gunzip > data/asn/ip2asn-v4.tsv.new && mv data/asn/ip2asn-v4.tsv.new data/asn/ip2asn-v4.tsv && docker restart zachteno-app'
