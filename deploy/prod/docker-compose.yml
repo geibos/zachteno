@@ -22,10 +22,24 @@ services:
     build: { context: ./src, dockerfile: deploy/docker/app.Dockerfile }
     container_name: zachteno-app
     restart: unless-stopped
-    env_file: .env
+    # Только то, что нужно приложению: ни пароля суперпользователя Postgres, ни ключей бэкапов.
     environment:
       BIND: 0.0.0.0:8080
-      METRICS_BIND: 0.0.0.0:9100
+      # Метрики только внутри контейнера: в proxy их видели бы все сервисы.
+      METRICS_BIND: 127.0.0.1:9100
+      PASSWORD_PEPPERS: ${PASSWORD_PEPPERS:?}
+      SIGNAL_HMAC_KEY: ${SIGNAL_HMAC_KEY:?}
+      SIGNAL_RETENTION_DAYS: ${SIGNAL_RETENTION_DAYS:-365}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?}
+      MAIL_MODE: ${MAIL_MODE:-smtp}
+      MAIL_FROM: ${MAIL_FROM:-Зачтено <no-reply@zachteno.example.org>}
+      SMTP_HOST: ${SMTP_HOST:-postbox.cloud.yandex.net}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      YANDEX_CLIENT_ID: ${YANDEX_CLIENT_ID:-}
+      YANDEX_CLIENT_SECRET: ${YANDEX_CLIENT_SECRET:-}
       PUBLIC_URL: https://zachteno.example.org
       TRUSTED_PROXIES: 172.30.90.0/24
       DATABASE_URL: postgres://zachteno_app:${ZACHTENO_APP_PASSWORD:?}@postgres:5432/zachteno
