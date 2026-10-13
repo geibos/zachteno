@@ -170,6 +170,7 @@ export interface Seeded {
 	testId: string;
 	testTitle: string;
 	streamId: string;
+	streamName: string;
 	inviteToken: string;
 }
 
@@ -185,6 +186,15 @@ interface TestSettings {
  * поток с назначенным курсом, ссылка-приглашение и открытое окно.
  */
 export async function seedTest(admin: Api, options: SeedOptions = {}): Promise<Seeded> {
+	const course = await seedCourseTest(admin, options);
+	const stream = await addStream(admin, course.courseId, course.testId);
+	return { ...course, ...stream };
+}
+
+export type SeededCourse = Pick<Seeded, 'courseId' | 'courseTitle' | 'testId' | 'testTitle'>;
+
+/** Курс с опубликованным тестом, без потоков. */
+export async function seedCourseTest(admin: Api, options: SeedOptions = {}): Promise<SeededCourse> {
 	const courseTitle = unique('E2E курс');
 	const testTitle = unique('E2E тест');
 	const { id: courseId } = await admin.call<{ id: string }>('POST', '/api/courses', {
@@ -218,12 +228,54 @@ export async function seedTest(admin: Api, options: SeedOptions = {}): Promise<S
 		}
 	});
 	await admin.call('POST', `/api/tests/${testId}/publish`);
+	return { courseId, courseTitle, testId, testTitle };
+}
 
-	const { id: streamId } = await admin.call<{ id: string }>('POST', '/api/streams', { name: unique('E2E поток') });
+export interface StreamOptions {
+	name?: string;
+	/** Создать ссылку-приглашение и открыть окно теста (по умолчанию да). */
+	inviteAndOpen?: boolean;
+}
+
+/** Поток с назначенным курсом; по умолчанию — со ссылкой-приглашением и открытым окном теста. */
+export async function addStream(
+	admin: Api,
+	courseId: string,
+	testId: string,
+	options: StreamOptions = {}
+): Promise<{ streamId: string; streamName: string; inviteToken: string }> {
+	const streamName = options.name ?? unique('E2E поток');
+	const { id: streamId } = await admin.call<{ id: string }>('POST', '/api/streams', { name: streamName });
 	await admin.call('POST', `/api/streams/${streamId}/courses`, { course_id: courseId });
+	if (options.inviteAndOpen === false) return { streamId, streamName, inviteToken: '' };
 	const invite = await admin.call<{ url: string }>('POST', `/api/streams/${streamId}/invites`, { label: 'e2e' });
 	await admin.call('PUT', `/api/tests/${testId}/windows/${streamId}`, { action: 'open' });
-	return { courseId, courseTitle, testId, testTitle, streamId, inviteToken: tokenFromUrl(invite.url) };
+	return { streamId, streamName, inviteToken: tokenFromUrl(invite.url) };
+}
+
+interface RunnerAttempt {
+	questions: Array<{ id: string; index: number; options: Array<{ id: string; body: string }> }>;
+}
+
+/**
+ * Студент проходит тест через API: на первые `right` вопросов (по порядку показа)
+ * отвечает «Верно», остальные пропускает, затем сдаёт попытку.
+ */
+export async function passViaApi(student: Api, testId: string, right: number): Promise<string> {
+	const { attempt_id: attemptId } = await student.call<{ attempt_id: string }>('POST', `/api/tests/${testId}/attempts`);
+	const attempt = await student.call<RunnerAttempt>('GET', `/api/attempts/${attemptId}`);
+	const ordered = [...attempt.questions].sort((a, b) => a.index - b.index).slice(0, right);
+	for (const question of ordered) {
+		const option = question.options.find((item) => item.body === 'Верно');
+		if (!option) throw new Error('В вопросе нет варианта «Верно»');
+		await student.call('PUT', `/api/attempts/${attemptId}/answers/${question.id}`, {
+			selected_option_ids: [option.id],
+			text: null,
+			client_seq: Date.now()
+		});
+	}
+	await student.call('POST', `/api/attempts/${attemptId}/submit`);
+	return attemptId;
 }
 
 export function tokenFromUrl(url: string): string {
@@ -233,7 +285,7 @@ export function tokenFromUrl(url: string): string {
 }
 
 /** Студент, вступивший в поток по приглашению. */
-export async function enrolledStudent(seeded: Seeded, name = 'Студент E2E'): Promise<Account> {
+export async function enrolledStudent(seeded: Pick<Seeded, 'inviteToken'>, name = 'Студент E2E'): Promise<Account> {
 	const student = await registerUser('student', name);
 	await student.api.call('POST', `/api/invites/${seeded.inviteToken}/join`);
 	return student;

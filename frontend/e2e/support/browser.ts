@@ -42,6 +42,27 @@ export async function loginViaForm(page: Page, email: string, password: string):
 	await expect(page.getByRole('button', { name: 'Меню пользователя' })).toBeVisible();
 }
 
+/** Тело `POST /api/signals` (сборщик сигналов антифрода). */
+export interface SignalBody {
+	event: string;
+	marker: string;
+	device: Record<string, string>;
+	browser: Record<string, string>;
+	typing: { dwell: number[]; flight: number[]; input: string } | null;
+}
+
+/** Ждёт отправку сигнала `event` страницей; возвращает тело запроса и статус ответа. */
+export async function nextSignal(page: Page, event: string): Promise<{ body: SignalBody; status: number }> {
+	const response = await page.waitForResponse(
+		(candidate) =>
+			candidate.url().endsWith('/api/signals') &&
+			candidate.request().method() === 'POST' &&
+			(candidate.request().postDataJSON() as SignalBody | null)?.event === event,
+		{ timeout: 15_000 }
+	);
+	return { body: response.request().postDataJSON() as SignalBody, status: response.status() };
+}
+
 /** Остаток таймера в секундах из «мм:сс» или «ч:мм:сс». */
 export function timerSeconds(text: string): number {
 	const parts = text.trim().split(':').map(Number);
