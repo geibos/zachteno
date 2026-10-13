@@ -1,0 +1,78 @@
+# Те же проверки, что `just ci`: линты и тесты бэкенда, проверки фронтенда,
+# актуальность сгенерированных OpenAPI-типов и строгая валидация OpenSpec.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Роли базы (на них ссылаются GRANT в миграциях)
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1
+          -c "CREATE ROLE zachteno_owner LOGIN PASSWORD 'ci'"
+          -c "CREATE ROLE zachteno_app LOGIN PASSWORD 'ci'"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+
+      - name: Бэкенд — форматирование и clippy
+        working-directory: backend
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Бэкенд — тесты
+        working-directory: backend
+        run: DATABASE_URL="$TEST_DATABASE_URL" cargo test --workspace
+
+      - name: Фронтенд — типы, e2e-типы, unit-тесты
+        working-directory: frontend
+        run: |
+          npm run check
+          npm run check:e2e
+          npm test
+
+      - name: OpenAPI-типы совпадают с бэкендом
+        run: |
+          (cd backend && cargo run -q -p app -- openapi > ../frontend/src/lib/api/openapi.json)
+          (cd frontend && npx openapi-typescript src/lib/api/openapi.json -o src/lib/api/schema.d.ts)
+          git diff --exit-code -- frontend/src/lib/api/openapi.json frontend/src/lib/api/schema.d.ts
+
+      - name: OpenSpec
+        run: npx --yes @fission-ai/openspec@1.13.1 validate add-student-testing-platform --strict
