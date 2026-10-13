@@ -35,7 +35,13 @@ web-build:
 
 web-check:
     cd frontend && npm run check
+    cd frontend && npm run check:e2e
+    cd frontend && npm test
+
+# Сгенерированные OpenAPI-типы совпадают с кодом бэкенда
+api-check: gen-api
+    git diff --exit-code -- frontend/src/lib/api/openapi.json frontend/src/lib/api/schema.d.ts
 
 # Полный набор проверок перед коммитом
-ci: lint test web-check
+ci: lint test web-check api-check
     openspec validate add-student-testing-platform --strict
