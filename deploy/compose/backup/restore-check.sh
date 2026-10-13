@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Еженедельная проверка восстановления: последняя копия разворачивается во временный Postgres,
 # выполняется контрольный запрос (spec platform-operations, «Проверка восстановления»).
+# RESTORE_CHECK_PREFIX — другой префикс WAL-G; для учения «Испорченная копия» — несуществующий.
 . "$(dirname "$0")/common.sh"
 
 fail() { echo "проверка восстановления не удалась: $1" >&2; mark restore_check failure "$1" || true; exit 1; }
@@ -10,7 +11,7 @@ name=zachteno-restore-check
 docker rm -f "$name" >/dev/null 2>&1 || true
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 docker run -d --name "$name" --network zachteno_backup \
-  -e WALG_S3_PREFIX=s3://pg-backups/zachteno -e AWS_ENDPOINT=http://backup-garage:3900 -e AWS_REGION=garage \
+  -e WALG_S3_PREFIX="${RESTORE_CHECK_PREFIX:-s3://pg-backups/zachteno}" -e AWS_ENDPOINT=http://backup-garage:3900 -e AWS_REGION=garage \
   -e AWS_S3_FORCE_PATH_STYLE=true -e AWS_ACCESS_KEY_ID="$BACKUP_S3_KEY_ID" -e AWS_SECRET_ACCESS_KEY="$BACKUP_S3_SECRET" \
   -e POSTGRES_PASSWORD=restore --entrypoint sleep zachteno-postgres:latest infinity >/dev/null || fail "запуск контейнера"
 docker exec -u postgres "$name" bash -c '
