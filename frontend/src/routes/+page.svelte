@@ -2,11 +2,9 @@
 	import TimerIcon from '@lucide/svelte/icons/timer';
 	import SigmaIcon from '@lucide/svelte/icons/sigma';
 	import CloudCheckIcon from '@lucide/svelte/icons/cloud-check';
-	import MailWarningIcon from '@lucide/svelte/icons/mail-warning';
-	import ClipboardListIcon from '@lucide/svelte/icons/clipboard-list';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
-	import * as Alert from '$lib/components/ui/alert';
+	import DashboardView from '$lib/components/student/DashboardView.svelte';
 	import { session } from '$lib/api/session.svelte';
 
 	const features = [
@@ -29,39 +27,11 @@
 </script>
 
 <svelte:head>
-	<title>{session.user ? 'Панель — Зачтено' : 'Зачтено — тестирование студентов'}</title>
+	<title>{session.user ? 'Мои тесты — Зачтено' : 'Зачтено — тестирование студентов'}</title>
 </svelte:head>
 
 {#if session.user}
-	{@const user = session.user}
-	<div class="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
-		<h1 class="text-2xl font-semibold tracking-tight">Панель</h1>
-		<p class="text-muted-foreground mt-1">Здравствуйте, {user.display_name}!</p>
-
-		{#if !user.email_verified}
-			<Alert.Root class="mt-6">
-				<MailWarningIcon />
-				<Alert.Title>Подтвердите email</Alert.Title>
-				<Alert.Description>
-					<p>
-						Мы отправили письмо на {user.email}. Проходить тесты можно и без подтверждения.
-						<a href="/profile" class="text-primary underline underline-offset-3">Отправить ещё раз</a>
-					</p>
-				</Alert.Description>
-			</Alert.Root>
-		{/if}
-
-		<Card.Root class="mt-6">
-			<Card.Content class="flex flex-col items-center gap-3 py-10 text-center">
-				<ClipboardListIcon class="text-muted-foreground size-10" />
-				<p class="font-medium">Здесь появятся ваши тесты</p>
-				<p class="text-muted-foreground max-w-sm text-sm">
-					Доступные, запланированные и пройденные тесты будут собраны на этой странице.
-					Чтобы попасть в поток, перейдите по пригласительной ссылке от преподавателя.
-				</p>
-			</Card.Content>
-		</Card.Root>
-	</div>
+	<DashboardView user={session.user} />
 {:else}
 	<section class="mx-auto w-full max-w-5xl px-4 pt-14 pb-10 sm:px-6 sm:pt-20">
 		<div class="max-w-2xl">

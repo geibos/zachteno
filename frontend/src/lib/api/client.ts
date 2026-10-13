@@ -4,6 +4,8 @@ import type { components, paths } from './schema';
 export type CurrentUser = components['schemas']['CurrentUser'];
 export type SessionInfo = components['schemas']['SessionInfo'];
 export type MeResponse = components['schemas']['MeResponse'];
+/** Любая схема из OpenAPI: `Schema<'TestDetail'>`. */
+export type Schema<Name extends keyof components['schemas']> = components['schemas'][Name];
 
 /** Тело ошибки бэкенда: `{ error, message }`. */
 export interface ErrorBody {
@@ -101,4 +103,64 @@ export async function unwrap<T>(request: Promise<FetchResult<T>>): Promise<T> {
 	const { data, error, response } = await request;
 	if (!response.ok) throw toApiError(response, error);
 	return data as T;
+}
+
+type QueryValue = string | number | boolean | null | undefined;
+
+/**
+ * Запрос мимо типизированного клиента. Нужен там, где OpenAPI описан неточно
+ * (query-параметры `search`, `link_id`, `user_id` объявлены как `in: path`),
+ * и для загрузки файлов multipart.
+ */
+export async function request<T>(
+	method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+	path: string,
+	options: { query?: Record<string, QueryValue>; json?: unknown; form?: FormData } = {}
+): Promise<T> {
+	const url = new URL(path, window.location.origin);
+	for (const [key, value] of Object.entries(options.query ?? {})) {
+		if (value !== null && value !== undefined && value !== '') url.searchParams.set(key, String(value));
+	}
+	const headers = new Headers();
+	let body: BodyInit | undefined;
+	if (options.form) {
+		body = options.form; // Content-Type с boundary выставит браузер
+	} else if (method !== 'GET') {
+		headers.set('Content-Type', 'application/json');
+		if (options.json !== undefined) body = JSON.stringify(options.json);
+	}
+	const response = await fetch(url.pathname + url.search, {
+		method,
+		headers,
+		body,
+		credentials: 'same-origin'
+	});
+	const text = await response.text();
+	let parsed: unknown = undefined;
+	if (text) {
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			parsed = text;
+		}
+	}
+	if (!response.ok) throw toApiError(response, parsed);
+	return parsed as T;
+}
+
+/** Максимальный размер картинки (spec course-authoring). */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const UPLOAD_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+
+/** Загружает картинку: `POST /api/attachments`, поле `file`. */
+export function uploadImage(file: File): Promise<Schema<'Uploaded'>> {
+	if (file.size > MAX_UPLOAD_BYTES) {
+		return Promise.reject(new ApiError(400, 'too_large', 'Файл больше 10 МБ.'));
+	}
+	if (!UPLOAD_TYPES.includes(file.type)) {
+		return Promise.reject(new ApiError(400, 'bad_type', 'Поддерживаются PNG, JPEG, WebP и GIF.'));
+	}
+	const form = new FormData();
+	form.append('file', file);
+	return request<Schema<'Uploaded'>>('POST', '/api/attachments', { form });
 }

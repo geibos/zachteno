@@ -1,5 +1,13 @@
 import MarkdownIt from 'markdown-it';
-import katexPlugin from '@vscode/markdown-it-katex';
+import katexModule from '@vscode/markdown-it-katex';
+
+// Пакет собран в CommonJS с `exports.default`: в Node (vitest) импорт по умолчанию —
+// уже функция, а в браузерной сборке Vite — объект `{ default: fn }`. Приводим к функции.
+type KatexPlugin = typeof katexModule;
+const katexPlugin: KatexPlugin =
+	typeof katexModule === 'function'
+		? katexModule
+		: (katexModule as unknown as { default: KatexPlugin }).default;
 
 /**
  * Рендер текстов вопросов и вариантов: Markdown + формулы KaTeX (D9).

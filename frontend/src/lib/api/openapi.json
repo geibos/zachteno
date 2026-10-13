@@ -105,9 +105,9 @@
         "parameters": [
           {
             "name": "search",
-            "in": "path",
+            "in": "query",
             "description": "Часть email или имени.",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -193,6 +193,28 @@
         "responses": {
           "204": {},
           "409": {}
+        }
+      }
+    },
+    "/api/antifraud/decisions": {
+      "post": {
+        "tags": [
+          "antifraud"
+        ],
+        "summary": "Отмечает связь как подтверждённую или отклонённую.",
+        "operationId": "decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Decision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {}
         }
       }
     },
@@ -303,6 +325,37 @@
           },
           "409": {
             "description": "время вышло или вопрос закрыт"
+          }
+        }
+      }
+    },
+    "/api/attempts/{attempt_id}/details": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Ответы попытки по вопросам и хронология её событий.",
+        "operationId": "attempt_details",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptDetails"
+                }
+              }
+            }
           }
         }
       }
@@ -439,6 +492,84 @@
         }
       }
     },
+    "/api/audit": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Аудит-лог: весь — суперпользователю, по своему курсу — методисту-владельцу.",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "actor_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "object_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditRecord"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/login": {
       "post": {
         "tags": [
@@ -500,6 +631,101 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/auth/oauth/yandex/callback": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Возврат с Яндекса: проверка `state`, обмен кода, вход или регистрация.",
+        "operationId": "callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "редирект в приложение"
+          }
+        }
+      }
+    },
+    "/api/auth/oauth/yandex/start": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Начинает вход: сохраняет `state` и PKCE и уводит на страницу Яндекса.",
+        "operationId": "start",
+        "parameters": [
+          {
+            "name": "next",
+            "in": "query",
+            "description": "Куда вернуться после входа (только путь этого сайта).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trusted",
+            "in": "query",
+            "description": "Токен ссылки доверенной регистрации.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "invite",
+            "in": "query",
+            "description": "Токен приглашения в поток.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "intent",
+            "in": "query",
+            "description": "`link` — привязать Яндекс ID к текущей учётке.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "редирект на Яндекс"
+          },
+          "404": {
+            "description": "провайдер не настроен"
           }
         }
       }
@@ -735,6 +961,37 @@
         }
       }
     },
+    "/api/courses/{course_id}/antifraud": {
+      "get": {
+        "tags": [
+          "antifraud"
+        ],
+        "summary": "Связи участников курса; просмотр записывается в аудит-лог.",
+        "operationId": "course_links",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CourseLinks"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/courses/{course_id}/clone": {
       "post": {
         "tags": [
@@ -761,6 +1018,98 @@
                   "$ref": "#/components/schemas/Created"
                 }
               }
+            }
+          }
+        }
+      }
+    },
+    "/api/courses/{course_id}/summary": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Студенты × тесты: итоговые баллы (пусто — «нет попыток»).",
+        "operationId": "course_summary",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "stream_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AttemptsMode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CourseSummary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/courses/{course_id}/summary.csv": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Сводная таблица курса в CSV.",
+        "operationId": "course_csv",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "stream_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AttemptsMode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {}
             }
           }
         }
@@ -1017,6 +1366,52 @@
         }
       }
     },
+    "/api/profile/identities": {
+      "get": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Мои внешние аккаунты.",
+        "operationId": "list_identities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Identity"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/profile/identities/{provider}": {
+      "delete": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Отвязывает внешний аккаунт; последний способ входа удалить нельзя.",
+        "operationId": "unlink_identity",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "409": {}
+        }
+      }
+    },
     "/api/profile/password": {
       "post": {
         "tags": [
@@ -1140,6 +1535,28 @@
         "responses": {
           "204": {},
           "409": {}
+        }
+      }
+    },
+    "/api/signals": {
+      "post": {
+        "tags": [
+          "antifraud"
+        ],
+        "summary": "Принимает сигналы текущего пользователя и ставит пересчёт его связей.",
+        "operationId": "submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {}
         }
       }
     },
@@ -1309,25 +1726,19 @@
           },
           {
             "name": "link_id",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
+              "type": "string",
               "format": "uuid"
             }
           },
           {
             "name": "user_id",
-            "in": "path",
-            "required": true,
+            "in": "query",
+            "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ],
+              "type": "string",
               "format": "uuid"
             }
           }
@@ -1755,6 +2166,149 @@
         }
       }
     },
+    "/api/tests/{test_id}/results": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Результаты теста для преподавателя и методиста.",
+        "operationId": "test_results",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "stream_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AttemptsMode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultsTable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tests/{test_id}/results.csv": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Таблица теста в CSV с теми же фильтрами.",
+        "operationId": "test_csv",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "stream_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AttemptsMode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/tests/{test_id}/stats": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Статистика по вопросам теста.",
+        "operationId": "question_stats",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "stream_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AttemptsMode"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/QuestionStat"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tests/{test_id}/windows": {
       "get": {
         "tags": [
@@ -1891,6 +2445,74 @@
           }
         }
       },
+      "AttemptDetails": {
+        "type": "object",
+        "description": "Детали попытки.",
+        "required": [
+          "attempt_id",
+          "test_id",
+          "display_name",
+          "email",
+          "cells",
+          "events"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cell"
+            }
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttemptEvent"
+            }
+          },
+          "test_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "AttemptEvent": {
+        "type": "object",
+        "description": "Событие попытки.",
+        "required": [
+          "kind",
+          "details",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "details": {
+            "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "question_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
       "AttemptView": {
         "type": "object",
         "description": "Попытка для прохождения.",
@@ -1959,6 +2581,69 @@
           }
         }
       },
+      "AuditRecord": {
+        "type": "object",
+        "description": "Запись журнала для просмотра.",
+        "required": [
+          "id",
+          "action",
+          "object_type",
+          "details",
+          "at"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "actor_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "actor_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "course_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "details": {
+            "type": "object"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "object_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "object_type": {
+            "type": "string"
+          }
+        }
+      },
       "BlockChange": {
         "type": "object",
         "description": "Заблокировать или разблокировать.",
@@ -1968,6 +2653,49 @@
         "properties": {
           "blocked": {
             "type": "boolean"
+          }
+        }
+      },
+      "Cell": {
+        "type": "object",
+        "description": "Ячейка вопроса.",
+        "required": [
+          "question_id",
+          "in_attempt",
+          "selected",
+          "free_text"
+        ],
+        "properties": {
+          "free_text": {
+            "type": "boolean"
+          },
+          "in_attempt": {
+            "type": "boolean",
+            "description": "Был ли вопрос в этой попытке (при случайной выборке — не всегда)."
+          },
+          "question_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "score": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Балл; `null` для свободного ответа."
+          },
+          "selected": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Выбранные варианты текстом (картинка без текста — «[картинка]»)."
+          },
+          "text_answer": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -2037,6 +2765,36 @@
           }
         }
       },
+      "ColumnHeader": {
+        "type": "object",
+        "description": "Столбец-вопрос.",
+        "required": [
+          "question_id",
+          "number",
+          "body",
+          "free_text",
+          "weight"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "free_text": {
+            "type": "boolean"
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "question_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "weight": {
+            "type": "string"
+          }
+        }
+      },
       "CourseDetail": {
         "type": "object",
         "description": "Курс целиком: описание, мои права и тесты.",
@@ -2083,6 +2841,33 @@
           },
           "title": {
             "type": "string"
+          }
+        }
+      },
+      "CourseLinks": {
+        "type": "object",
+        "description": "Связи участников курса и кластеры.",
+        "required": [
+          "links",
+          "clusters"
+        ],
+        "properties": {
+          "clusters": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "description": "Группы аккаунтов, связанных на уровне от среднего (без отклонённых связей)."
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkView"
+            }
           }
         }
       },
@@ -2348,6 +3133,76 @@
           }
         }
       },
+      "Decision": {
+        "type": "object",
+        "description": "Решение проверяющего.",
+        "required": [
+          "course_id",
+          "user_a",
+          "user_b",
+          "decision"
+        ],
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "decision": {
+            "type": "string",
+            "description": "`confirmed` или `rejected`."
+          },
+          "user_a": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "user_b": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Evidence": {
+        "type": "object",
+        "description": "Основание связи: что совпало и когда (без сырых значений).",
+        "required": [
+          "kind",
+          "detail"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EvidenceKind"
+          }
+        }
+      },
+      "EvidenceKind": {
+        "type": "string",
+        "description": "Вид совпадения, на котором основана связь.",
+        "enum": [
+          "shared_marker",
+          "shared_rare_device",
+          "shared_common_device",
+          "home_network",
+          "session_handoff",
+          "identical_free_text",
+          "matching_mistakes",
+          "typing_similarity",
+          "registration_pattern",
+          "shared_public_network"
+        ]
+      },
       "FinalScorePolicy": {
         "type": "string",
         "description": "Как выбирается итоговый балл из сданных попыток.",
@@ -2376,6 +3231,29 @@
           "superuser",
           "methodist"
         ]
+      },
+      "Identity": {
+        "type": "object",
+        "description": "Привязанный внешний аккаунт.",
+        "required": [
+          "provider",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
       },
       "ImageRef": {
         "type": "object",
@@ -2540,6 +3418,76 @@
           }
         }
       },
+      "LinkView": {
+        "type": "object",
+        "description": "Связь двух аккаунтов.",
+        "required": [
+          "user_a",
+          "user_b",
+          "level",
+          "evidence",
+          "comment",
+          "computed_at"
+        ],
+        "properties": {
+          "comment": {
+            "type": "string"
+          },
+          "computed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decided_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "decision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Evidence"
+            }
+          },
+          "level": {
+            "type": "string"
+          },
+          "user_a": {
+            "$ref": "#/components/schemas/LinkedUser"
+          },
+          "user_b": {
+            "$ref": "#/components/schemas/LinkedUser"
+          }
+        }
+      },
+      "LinkedUser": {
+        "type": "object",
+        "description": "Участник связи.",
+        "required": [
+          "id",
+          "display_name",
+          "email"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "description": "Данные входа.",
@@ -2560,9 +3508,14 @@
         "type": "object",
         "description": "Кто я и что доступно на этом стенде.",
         "required": [
-          "yandex_enabled"
+          "yandex_enabled",
+          "teaches"
         ],
         "properties": {
+          "teaches": {
+            "type": "boolean",
+            "description": "Преподаёт ли пользователь хотя бы на одном курсе."
+          },
           "user": {
             "oneOf": [
               {
@@ -2705,6 +3658,7 @@
           "body",
           "is_correct",
           "penalty",
+          "penalty_custom",
           "pinned"
         ],
         "properties": {
@@ -2729,7 +3683,12 @@
             "type": "boolean"
           },
           "penalty": {
-            "type": "string"
+            "type": "string",
+            "description": "Действующий штраф (заданный или по умолчанию для режима)."
+          },
+          "penalty_custom": {
+            "type": "boolean",
+            "description": "Задан ли штраф явно (иначе берётся по умолчанию и пересчитывается при смене веса)."
           },
           "pinned": {
             "type": "boolean"
@@ -2765,6 +3724,32 @@
           },
           "pinned": {
             "type": "boolean"
+          }
+        }
+      },
+      "OptionStat": {
+        "type": "object",
+        "description": "Частота выбора варианта.",
+        "required": [
+          "option_id",
+          "body",
+          "is_correct",
+          "chosen"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "chosen": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "is_correct": {
+            "type": "boolean"
+          },
+          "option_id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
@@ -2879,6 +3864,62 @@
           }
         }
       },
+      "QuestionStat": {
+        "type": "object",
+        "description": "Статистика вопроса.",
+        "required": [
+          "question_id",
+          "number",
+          "body",
+          "sample",
+          "answered",
+          "fully_correct",
+          "skipped",
+          "options"
+        ],
+        "properties": {
+          "answered": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "average_score": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": "string"
+          },
+          "fully_correct": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "number": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OptionStat"
+            }
+          },
+          "question_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sample": {
+            "type": "integer",
+            "description": "Сколько итоговых попыток содержали вопрос (размер выборки).",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "RegisterRequest": {
         "type": "object",
         "description": "Данные регистрации.",
@@ -2918,6 +3959,37 @@
             "type": "string"
           },
           "token": {
+            "type": "string"
+          }
+        }
+      },
+      "ResultsTable": {
+        "type": "object",
+        "description": "Таблица теста.",
+        "required": [
+          "test_id",
+          "title",
+          "columns",
+          "rows"
+        ],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ColumnHeader"
+            }
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TableRow"
+            }
+          },
+          "test_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
             "type": "string"
           }
         }
@@ -3278,6 +4350,70 @@
           }
         }
       },
+      "SignalEvent": {
+        "type": "string",
+        "description": "Событие, при котором собраны сигналы.",
+        "enum": [
+          "register",
+          "login",
+          "invite",
+          "attempt_start",
+          "answer"
+        ]
+      },
+      "SignalInput": {
+        "type": "object",
+        "description": "Сигналы от клиента.",
+        "required": [
+          "event",
+          "marker"
+        ],
+        "properties": {
+          "browser": {
+            "type": "object",
+            "description": "Признаки конкретного браузера.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "device": {
+            "type": "object",
+            "description": "Признаки устройства, не зависящие от браузера.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "event": {
+            "$ref": "#/components/schemas/SignalEvent"
+          },
+          "marker": {
+            "type": "string",
+            "description": "Постоянный маркер браузера."
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "typing": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Typing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "Started": {
         "type": "object",
         "description": "Начатая (или продолженная) попытка.",
@@ -3394,6 +4530,169 @@
               "null"
             ],
             "format": "date-time"
+          }
+        }
+      },
+      "SummaryCell": {
+        "type": "object",
+        "description": "Итог студента по тесту.",
+        "required": [
+          "test_id",
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "final_score": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_score": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "test_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "SummaryRow": {
+        "type": "object",
+        "description": "Строка сводной таблицы.",
+        "required": [
+          "user_id",
+          "display_name",
+          "email",
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SummaryCell"
+            }
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "SummaryTest": {
+        "type": "object",
+        "description": "Тест-столбец сводной таблицы.",
+        "required": [
+          "test_id",
+          "title"
+        ],
+        "properties": {
+          "test_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "TableRow": {
+        "type": "object",
+        "description": "Строка таблицы.",
+        "required": [
+          "attempt_id",
+          "user_id",
+          "display_name",
+          "email",
+          "removed",
+          "attempt_number",
+          "started_at",
+          "submitted_at",
+          "duration_seconds",
+          "score",
+          "max_score",
+          "antifraud",
+          "cells"
+        ],
+        "properties": {
+          "antifraud": {
+            "type": "boolean",
+            "description": "Есть ли значимые сигналы антифрода."
+          },
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "attempt_number": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cell"
+            }
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "duration_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "email": {
+            "type": "string"
+          },
+          "final_score": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "max_score": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "score": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stream_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submit_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
@@ -3668,6 +4967,30 @@
           "user_id": {
             "type": "string",
             "format": "uuid"
+          }
+        }
+      },
+      "Typing": {
+        "type": "object",
+        "description": "Ритм набора: интервалы удержания и между нажатиями, мс (без кодов клавиш).",
+        "properties": {
+          "dwell": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "flight": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "input": {
+            "type": "string",
+            "description": "Тип устройства ввода: `touch` или `keyboard`."
           }
         }
       },

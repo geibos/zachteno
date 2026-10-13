@@ -22,8 +22,11 @@
 	const nav = $derived.by((): NavItem[] => {
 		const user = session.user;
 		if (!user) return [];
-		const items: NavItem[] = [{ href: '/', label: 'Панель' }];
-		if (user.roles.methodist) items.push({ href: '/courses', label: 'Курсы' });
+		const items: NavItem[] = [{ href: '/', label: 'Мои тесты' }];
+		if (session.isStaff) {
+			items.push({ href: '/courses', label: 'Курсы' });
+			items.push({ href: '/streams', label: 'Потоки' });
+		}
 		if (user.roles.superuser) items.push({ href: '/admin', label: 'Администрирование' });
 		return items;
 	});
@@ -56,7 +59,7 @@
 		</a>
 
 		{#if nav.length > 0}
-			<nav class="hidden items-center gap-1 sm:flex" aria-label="Основная навигация">
+			<nav class="hidden items-center gap-1 md:flex" aria-label="Основная навигация">
 				{#each nav as item (item.href)}
 					<a
 						href={item.href}
@@ -98,7 +101,7 @@
 						</DropdownMenu.Label>
 						<DropdownMenu.Separator />
 						{#each nav as item (item.href)}
-							<DropdownMenu.Item class="sm:hidden" onSelect={() => goto(item.href)}>
+							<DropdownMenu.Item class="md:hidden" onSelect={() => goto(item.href)}>
 								{item.label}
 							</DropdownMenu.Item>
 						{/each}
