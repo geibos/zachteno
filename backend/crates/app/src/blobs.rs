@@ -23,6 +23,12 @@ pub(crate) type Blobs = Arc<dyn ObjectStore>;
 pub(crate) const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 /// Наибольшая сторона картинки в пикселях (защита от «бомб»).
 const MAX_SIDE: u32 = 8000;
+/// Наибольшая сторона кадра анимации.
+const MAX_GIF_SIDE: u32 = 2000;
+/// Не больше стольких кадров анимации.
+const MAX_FRAMES: usize = 300;
+/// Суммарный бюджет пикселей на все кадры анимации.
+const MAX_GIF_PIXELS: u64 = 100_000_000;
 
 /// S3-клиент для Garage: path-style, http разрешён для внутренней сети.
 pub(crate) fn connect(config: &StorageConfig) -> anyhow::Result<Blobs> {
@@ -87,17 +93,17 @@ pub(crate) fn process(upload: &[u8]) -> Result<Processed, Rejected> {
     }
 }
 
-fn limits() -> Limits {
+fn limits(side: u32) -> Limits {
     let mut limits = Limits::default();
-    limits.max_image_width = Some(MAX_SIDE);
-    limits.max_image_height = Some(MAX_SIDE);
-    limits.max_alloc = Some(512 * 1024 * 1024);
+    limits.max_image_width = Some(side);
+    limits.max_image_height = Some(side);
+    limits.max_alloc = Some(256 * 1024 * 1024);
     limits
 }
 
 fn reencode_still(upload: &[u8], format: ImageFormat) -> Result<Processed, Rejected> {
     let mut reader = ImageReader::with_format(Cursor::new(upload), format);
-    reader.limits(limits());
+    reader.limits(limits(MAX_SIDE));
     let decoded = reader.decode().map_err(|_| Rejected::Undecodable)?;
     let (output, content_type) = match format {
         ImageFormat::Jpeg => (ImageFormat::Jpeg, "image/jpeg"),
@@ -112,9 +118,17 @@ fn reencode_still(upload: &[u8], format: ImageFormat) -> Result<Processed, Rejec
 
 fn reencode_gif(upload: &[u8]) -> Result<Processed, Rejected> {
     let mut decoder = GifDecoder::new(Cursor::new(upload)).map_err(|_| Rejected::Undecodable)?;
-    decoder.set_limits(limits()).map_err(|_| Rejected::Undecodable)?;
-    let frames = decoder.into_frames().collect_frames().map_err(|_| Rejected::Undecodable)?;
-    let (width, height) = frames.first().map(|frame| frame.buffer().dimensions()).ok_or(Rejected::Undecodable)?;
+    decoder.set_limits(limits(MAX_GIF_SIDE)).map_err(|_| Rejected::Undecodable)?;
+    let (width, height) = decoder.dimensions();
+    let frame_pixels = u64::from(width).saturating_mul(u64::from(height)).max(1);
+    let frame_budget = usize::try_from(MAX_GIF_PIXELS.checked_div(frame_pixels).unwrap_or(0)).unwrap_or(0).min(MAX_FRAMES);
+    let mut frames = Vec::new();
+    for frame in decoder.into_frames() {
+        if frames.len() >= frame_budget {
+            return Err(Rejected::Undecodable);
+        }
+        frames.push(frame.map_err(|_| Rejected::Undecodable)?);
+    }
     let mut encoded = Vec::new();
     {
         let mut encoder = GifEncoder::new(&mut encoded);

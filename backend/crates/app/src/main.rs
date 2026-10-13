@@ -5,6 +5,7 @@ mod admin;
 mod audit;
 mod blobs;
 mod auth;
+mod authoring;
 mod cli;
 mod clock;
 mod config;

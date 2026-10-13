@@ -2,13 +2,14 @@
 
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 #[cfg(test)]
 mod tests;
 
 /// Тип вопроса вместе с режимом оценки множественного выбора.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionKind {
     /// Одиночный выбор.
@@ -22,6 +23,25 @@ pub enum QuestionKind {
 }
 
 impl QuestionKind {
+    /// Имя в базе и API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::MultipleAll => "multiple_all",
+            Self::MultipleAny => "multiple_any",
+            Self::FreeText => "free_text",
+        }
+    }
+
+    /// Разбор имени из базы.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [Self::Single, Self::MultipleAll, Self::MultipleAny, Self::FreeText]
+            .into_iter()
+            .find(|kind| kind.as_str() == name)
+    }
+
     /// Оценивается ли вопрос этого типа баллами.
     #[must_use]
     pub const fn is_scored(self) -> bool {
@@ -123,7 +143,7 @@ pub fn attempt_score(question_scores: &[Decimal]) -> Decimal {
 }
 
 /// Как выбирается итоговый балл из сданных попыток.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalScorePolicy {
     /// Максимальный балл.
@@ -132,6 +152,24 @@ pub enum FinalScorePolicy {
     Last,
     /// Среднее арифметическое, округлённое до двух знаков.
     Average,
+}
+
+impl FinalScorePolicy {
+    /// Имя в базе и API.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Best => "best",
+            Self::Last => "last",
+            Self::Average => "average",
+        }
+    }
+
+    /// Разбор имени из базы.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [Self::Best, Self::Last, Self::Average].into_iter().find(|policy| policy.as_str() == name)
+    }
 }
 
 /// Итоговый балл по баллам сданных попыток в порядке сдачи.

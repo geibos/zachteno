@@ -64,6 +64,7 @@ pub(crate) fn state(db: PgPool) -> AppState {
         login_failures: Arc::new(LoginFailures::default()),
         http_client: reqwest::Client::new(),
         blobs: Arc::new(object_store::memory::InMemory::new()),
+        image_permits: Arc::new(tokio::sync::Semaphore::new(2)),
     }
 }
 
@@ -119,6 +120,38 @@ impl Client {
         let Some(set) = headers.get(header::SET_COOKIE).and_then(|cookie| cookie.to_str().ok()) else { return };
         let pair = set.split(';').next().unwrap_or_default().to_owned();
         self.cookie = if pair.ends_with('=') { None } else { Some(pair) };
+    }
+
+    /// GET без разбора тела (для файлов).
+    pub(crate) async fn get_raw(&mut self, path: &str) -> StatusCode {
+        let mut builder = Request::builder().method(Method::GET).uri(path);
+        if let Some(cookie) = &self.cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        self.app.clone().oneshot(builder.body(Body::empty()).unwrap()).await.unwrap().status()
+    }
+
+    /// Отправка одного файла multipart.
+    pub(crate) async fn multipart(&mut self, path: &str, field: &str, filename: &str, bytes: Vec<u8>) -> (StatusCode, Json) {
+        let boundary = "zachteno-test-boundary";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(&bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let mut builder = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"));
+        if let Some(cookie) = &self.cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let response = self.app.clone().oneshot(builder.body(Body::from(body)).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Json::Null))
     }
 
     pub(crate) async fn get(&mut self, path: &str) -> (StatusCode, Json) {

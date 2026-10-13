@@ -27,6 +27,8 @@ pub(crate) struct AppState {
     pub http_client: reqwest::Client,
     /// Хранилище картинок.
     pub blobs: Blobs,
+    /// Не больше двух картинок обрабатываются одновременно.
+    pub image_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -37,6 +39,7 @@ impl AppState {
         Ok(Self {
             db,
             blobs: store,
+            image_permits: Arc::new(tokio::sync::Semaphore::new(2)),
             hasher: Hasher::new(config.secrets.peppers.clone(), concurrency),
             config: Arc::new(config),
             clock: Clock::System,
