@@ -6,7 +6,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::types::Json as SqlJson;
+use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -59,7 +60,7 @@ struct LinkRow {
     b_name: String,
     b_email: String,
     level: String,
-    evidence: sqlx::types::Json<Vec<Evidence>>,
+    evidence: SqlJson<Vec<Evidence>>,
     decision: Option<String>,
     comment: String,
     decided_at: Option<OffsetDateTime>,
@@ -94,9 +95,15 @@ pub(crate) async fn course_links(
     (user, ClientIp(ip)): (CurrentUser, ClientIp),
     Path(course_id): Path<Uuid>,
 ) -> ApiResult<Json<CourseLinks>> {
-    let _role = access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_view)?;
-    let rows: Vec<LinkRow> = sqlx::query_as(COURSE_LINKS).bind(course_id).fetch_all(&state.db).await?;
-    AuditEntry::new("antifraud.view", "course").by(Some(user.id), Some(ip)).on(course_id).in_course(course_id).record(&state.db).await?;
+    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_view).await?;
+    let rows: Vec<LinkRow> =
+        sqlx::query_as(COURSE_LINKS).bind(course_id).fetch_all(&state.db).await?;
+    AuditEntry::new("antifraud.view", "course")
+        .by(Some(user.id), Some(ip))
+        .on(course_id)
+        .in_course(course_id)
+        .record(&state.db)
+        .await?;
     let clusters = clusters(&rows);
     Ok(Json(CourseLinks { links: rows.into_iter().map(view).collect(), clusters }))
 }
@@ -114,30 +121,53 @@ fn view(row: LinkRow) -> LinkView {
     }
 }
 
+/// Родитель узла в union-find.
+type Parents = HashMap<Uuid, Uuid>;
+
+/// Узлы по корню своего множества.
+type Groups = HashMap<Uuid, Vec<Uuid>>;
+
 /// Union-find по связям от среднего уровня, кроме отклонённых.
 fn clusters(rows: &[LinkRow]) -> Vec<Vec<Uuid>> {
-    let mut parent: HashMap<Uuid, Uuid> = HashMap::new();
-    fn root(parent: &mut HashMap<Uuid, Uuid>, node: Uuid) -> Uuid {
-        let mut current = node;
-        while let Some(next) = parent.get(&current).copied().filter(|next| *next != current) {
-            current = next;
-        }
-        let _compressed = parent.insert(node, current);
-        current
+    let mut parent = union_links(rows);
+    let nodes: Vec<Uuid> = parent.keys().copied().collect();
+    let mut groups = Groups::new();
+    for node in nodes {
+        let top = root(&mut parent, node);
+        groups.entry(top).or_default().push(node);
     }
-    for row in rows.iter().filter(|row| row.level != "low" && row.decision.as_deref() != Some("rejected")) {
+    groups
+        .into_values()
+        .filter(|group| group.len() > 1)
+        .map(|mut group| {
+            group.sort_unstable();
+            group
+        })
+        .collect()
+}
+
+/// Объединяет участников значимых связей.
+fn union_links(rows: &[LinkRow]) -> Parents {
+    let mut parent = Parents::new();
+    for row in
+        rows.iter().filter(|row| row.level != "low" && row.decision.as_deref() != Some("rejected"))
+    {
         let _a = parent.entry(row.user_a).or_insert(row.user_a);
         let _b = parent.entry(row.user_b).or_insert(row.user_b);
         let (one, two) = (root(&mut parent, row.user_a), root(&mut parent, row.user_b));
         let _merged = parent.insert(one, two);
     }
-    let nodes: Vec<Uuid> = parent.keys().copied().collect();
-    let mut groups: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
-    for node in nodes {
-        let top = root(&mut parent, node);
-        groups.entry(top).or_default().push(node);
+    parent
+}
+
+/// Корень множества узла со сжатием пути.
+fn root(parent: &mut Parents, node: Uuid) -> Uuid {
+    let mut current = node;
+    while let Some(next) = parent.get(&current).copied().filter(|next| *next != current) {
+        current = next;
     }
-    groups.into_values().filter(|group| group.len() > 1).map(|mut group| { group.sort_unstable(); group }).collect()
+    let _compressed = parent.insert(node, current);
+    current
 }
 
 /// Решение проверяющего.
@@ -147,9 +177,29 @@ pub(crate) struct Decision {
     pub user_a: Uuid,
     pub user_b: Uuid,
     /// `confirmed` или `rejected`.
-    pub decision: String,
+    #[serde(rename = "decision")]
+    pub verdict: String,
     #[serde(default)]
     pub comment: String,
+}
+
+impl Decision {
+    fn validate(&self) -> ApiResult<()> {
+        if matches!(self.verdict.as_str(), "confirmed" | "rejected") {
+            Ok(())
+        } else {
+            Err(AppError::BadRequest("Решение: confirmed или rejected".to_owned()))
+        }
+    }
+
+    /// Пара в порядке хранения: `user_a < user_b`.
+    fn ordered_pair(&self) -> (Uuid, Uuid) {
+        if self.user_a < self.user_b {
+            (self.user_a, self.user_b)
+        } else {
+            (self.user_b, self.user_a)
+        }
+    }
 }
 
 /// Отмечает связь как подтверждённую или отклонённую.
@@ -159,33 +209,54 @@ pub(crate) async fn decide(
     (user, ClientIp(ip)): (CurrentUser, ClientIp),
     Json(request): Json<Decision>,
 ) -> ApiResult<StatusCode> {
-    let _role = access::require(access::course_role(&state.db, &user, request.course_id).await?, CourseRole::can_view)?;
-    if !matches!(request.decision.as_str(), "confirmed" | "rejected") {
-        return Err(AppError::BadRequest("Решение: confirmed или rejected".to_owned()));
-    }
-    let (user_a, user_b) = if request.user_a < request.user_b { (request.user_a, request.user_b) } else { (request.user_b, request.user_a) };
+    let _role =
+        access::require_on(&state.db, &user, request.course_id, CourseRole::can_view).await?;
+    request.validate()?;
     let mut tx = state.db.begin().await?;
-    let statement = format!(
+    let (user_a, user_b) = update_decision(&mut tx, &request, user.id, state.clock.now()).await?;
+    let details = serde_json::json!({ "user_a": user_a, "user_b": user_b, "decision": request.verdict, "comment": request.comment });
+    AuditEntry::new("antifraud.decision", "identity_link")
+        .by(Some(user.id), Some(ip))
+        .in_course(request.course_id)
+        .with(details)
+        .record(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// UPDATE решения, ограниченный связями участников курса `$1`.
+fn decision_statement() -> String {
+    format!(
         "WITH {PARTICIPANTS}
          UPDATE identity_links SET decision = $4, comment = $5, decided_by = $6, decided_at = $7
          WHERE user_a = $2 AND user_b = $3
            AND (user_a IN (SELECT user_id FROM participants) OR user_b IN (SELECT user_id FROM participants))"
-    );
-    let updated = sqlx::query(sqlx::AssertSqlSafe(statement))
-    .bind(request.course_id)
-    .bind(user_a)
-    .bind(user_b)
-    .bind(&request.decision)
-    .bind(request.comment.trim())
-    .bind(user.id)
-    .bind(state.clock.now())
-    .execute(&mut *tx)
-    .await?;
+    )
+}
+
+/// Записывает решение по связи участника курса; возвращает пару в порядке хранения.
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn update_decision(
+    tx: &mut PgConnection,
+    request: &Decision,
+    decided_by: Uuid,
+    now: OffsetDateTime,
+) -> ApiResult<(Uuid, Uuid)> {
+    let (user_a, user_b) = request.ordered_pair();
+    let updated = sqlx::query(sqlx::AssertSqlSafe(decision_statement()))
+        .bind(request.course_id)
+        .bind(user_a)
+        .bind(user_b)
+        .bind(&request.verdict)
+        .bind(request.comment.trim())
+        .bind(decided_by)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
     if updated.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
-    let details = serde_json::json!({ "user_a": user_a, "user_b": user_b, "decision": request.decision, "comment": request.comment });
-    AuditEntry::new("antifraud.decision", "identity_link").by(Some(user.id), Some(ip)).in_course(request.course_id).with(details).record(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok((user_a, user_b))
 }

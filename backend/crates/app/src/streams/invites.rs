@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::audit::AuditEntry;
@@ -33,6 +33,8 @@ pub(crate) struct IssuedInvite {
     pub url: String,
 }
 
+const INSERT_INVITE: &str = "INSERT INTO invite_links (stream_id, token_hash, label, created_by) VALUES ($1, $2, $3, $4) RETURNING id";
+
 /// Создаёт многоразовую пригласительную ссылку.
 #[utoipa::path(post, path = "/api/streams/{stream_id}/invites", tag = "streams", params(("stream_id" = Uuid, Path)),
     request_body = NewInvite, responses((status = 201, body = IssuedInvite)))]
@@ -45,17 +47,26 @@ pub(crate) async fn create_invite(
     require_manager(&state.db, &user, stream_id).await?;
     let token = tokens::issue();
     let mut tx = state.db.begin().await?;
-    let id: Uuid = sqlx::query_scalar("INSERT INTO invite_links (stream_id, token_hash, label, created_by) VALUES ($1, $2, $3, $4) RETURNING id")
+    let id: Uuid = sqlx::query_scalar(INSERT_INVITE)
         .bind(stream_id)
         .bind(&token.hash)
         .bind(request.label.trim())
         .bind(user.id)
         .fetch_one(&mut *tx)
         .await?;
-    AuditEntry::new("invite.create", "invite_link").by(Some(user.id), Some(ip)).on(id).with(serde_json::json!({ "stream_id": stream_id })).record(&mut *tx).await?;
+    AuditEntry::new("invite.create", "invite_link")
+        .by(Some(user.id), Some(ip))
+        .on(id)
+        .with(serde_json::json!({ "stream_id": stream_id }))
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
-    let url = format!("{}/invite/{}", state.config.http.public_url, token.raw);
-    Ok((StatusCode::CREATED, Json(IssuedInvite { id, url })))
+    Ok((StatusCode::CREATED, Json(IssuedInvite { id, url: invite_url(&state, &token.raw) })))
+}
+
+/// Адрес страницы приглашения.
+fn invite_url(state: &AppState, raw: &str) -> String {
+    format!("{}/invite/{raw}", state.config.http.public_url)
 }
 
 /// Ссылка в списке.
@@ -90,11 +101,13 @@ pub(crate) async fn list_invites(
 }
 
 /// Фильтр журнала.
-#[derive(Debug, Deserialize, IntoParams)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct UsesQuery {
-    pub link_id: Option<Uuid>,
-    pub user_id: Option<Uuid>,
+    #[serde(rename = "link_id")]
+    pub link: Option<Uuid>,
+    #[serde(rename = "user_id")]
+    pub student: Option<Uuid>,
 }
 
 /// Переход по ссылке.
@@ -119,18 +132,18 @@ pub(crate) async fn invite_uses(
     Query(filter): Query<UsesQuery>,
 ) -> ApiResult<Json<Vec<InviteUse>>> {
     require_manager(&state.db, &user, stream_id).await?;
-    let uses = sqlx::query_as(
+    let history = sqlx::query_as(
         "SELECT u.link_id, l.label AS link_label, u.user_id, p.email, p.display_name, u.used_at
          FROM invite_link_uses u JOIN invite_links l ON l.id = u.link_id JOIN users p ON p.id = u.user_id
          WHERE l.stream_id = $1 AND ($2::uuid IS NULL OR u.link_id = $2) AND ($3::uuid IS NULL OR u.user_id = $3)
          ORDER BY u.used_at",
     )
     .bind(stream_id)
-    .bind(filter.link_id)
-    .bind(filter.user_id)
+    .bind(filter.link)
+    .bind(filter.student)
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(uses))
+    Ok(Json(history))
 }
 
 /// Что видит посетитель на странице приглашения.
@@ -161,7 +174,10 @@ async fn find(executor: &mut PgConnection, raw: &str) -> ApiResult<InviteRow> {
 /// Название потока по ссылке (доступно без входа).
 #[utoipa::path(get, path = "/api/invites/{token}", tag = "streams", params(("token" = String, Path)),
     responses((status = 200, body = InviteInfo), (status = 404)))]
-pub(crate) async fn invite_info(State(state): State<AppState>, Path(token): Path<String>) -> ApiResult<Json<InviteInfo>> {
+pub(crate) async fn invite_info(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> ApiResult<Json<InviteInfo>> {
     let mut connection = state.db.acquire().await?;
     let invite = find(&mut connection, &token).await?;
     let courses = sqlx::query_scalar(
@@ -192,21 +208,30 @@ pub(crate) async fn join(
 ) -> ApiResult<Json<Joined>> {
     let mut tx = state.db.begin().await?;
     let invite = find(&mut tx, &token).await?;
-    let joined = join_by_link(&mut tx, (invite.link_id, invite.stream_id), user.id, (ip, state.clock.now())).await?;
+    let joined =
+        join_by_link(&mut tx, (invite.link_id, invite.stream_id), user.id, (ip, state.clock.now()))
+            .await?;
     tx.commit().await?;
-    Ok(Json(Joined { stream_id: invite.stream_id, stream_name: invite.stream_name, already_member: !joined }))
+    Ok(Json(Joined {
+        stream_id: invite.stream_id,
+        stream_name: invite.stream_name,
+        already_member: !joined,
+    }))
 }
+
+const RECORD_USE: &str =
+    "INSERT INTO invite_link_uses (link_id, user_id, used_at, ip) VALUES ($1, $2, $3, $4)";
 
 /// Делает пользователя студентом потока и пишет переход в журнал. Возвращает, стал ли он участником сейчас.
 ///
 /// cancel-safe: yes — в транзакции вызывающего.
 pub(crate) async fn join_by_link(
     tx: &mut PgConnection,
-    (link_id, stream_id): (Uuid, Uuid),
+    (link_id, stream_id): LinkAndStream,
     user_id: Uuid,
     (ip, now): (IpAddr, OffsetDateTime),
 ) -> ApiResult<bool> {
-    let _used = sqlx::query("INSERT INTO invite_link_uses (link_id, user_id, used_at, ip) VALUES ($1, $2, $3, $4)")
+    let _used = sqlx::query(RECORD_USE)
         .bind(link_id)
         .bind(user_id)
         .bind(now)
@@ -226,14 +251,23 @@ pub(crate) async fn join_by_link(
     Ok(joined.rows_affected() > 0)
 }
 
+/// Ссылка и её поток.
+type LinkAndStream = (Uuid, Uuid);
+
 /// Вступление по хешу токена (после входа через внешний провайдер).
 ///
 /// cancel-safe: yes — в транзакции вызывающего.
-pub(crate) async fn join_by_hash(tx: &mut PgConnection, hash: &[u8], user_id: Uuid, (ip, now): (IpAddr, OffsetDateTime)) -> ApiResult<()> {
-    let found: Option<(Uuid, Uuid)> = sqlx::query_as("SELECT id, stream_id FROM invite_links WHERE token_hash = $1")
-        .bind(hash)
-        .fetch_optional(&mut *tx)
-        .await?;
+pub(crate) async fn join_by_hash(
+    tx: &mut PgConnection,
+    hash: &[u8],
+    user_id: Uuid,
+    (ip, now): (IpAddr, OffsetDateTime),
+) -> ApiResult<()> {
+    let found: Option<LinkAndStream> =
+        sqlx::query_as("SELECT id, stream_id FROM invite_links WHERE token_hash = $1")
+            .bind(hash)
+            .fetch_optional(&mut *tx)
+            .await?;
     if let Some(link) = found {
         let _joined = join_by_link(tx, link, user_id, (ip, now)).await?;
     }

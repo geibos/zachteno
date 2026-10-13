@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::attempts::review::{self, ReviewAvailability};
-use crate::attempts::runner::{AttemptRow, own_attempt};
+use crate::attempts::runner::{AttemptRow, ReadMode, own_attempt};
 use crate::auth::session::CurrentUser;
 use crate::authoring::model;
 use crate::error::ApiResult;
@@ -64,7 +64,9 @@ pub(crate) struct DashboardTest {
 
 impl DashboardTest {
     fn can_start(&self) -> bool {
-        self.is_open && (self.active_attempt_id.is_some() || self.attempts_limit.is_none_or(|limit| self.attempts_used < i64::from(limit)))
+        self.is_open
+            && (self.active_attempt_id.is_some()
+                || self.attempts_limit.is_none_or(|limit| self.attempts_used < i64::from(limit)))
     }
 }
 
@@ -76,11 +78,7 @@ pub(crate) struct Dashboard {
     pub completed: Vec<DashboardTest>,
 }
 
-/// Доступные, запланированные и пройденные тесты студента.
-#[utoipa::path(get, path = "/api/dashboard", tag = "attempts", responses((status = 200, body = Dashboard)))]
-pub(crate) async fn dashboard(State(state): State<AppState>, user: CurrentUser) -> ApiResult<Json<Dashboard>> {
-    let rows: Vec<DashRow> = sqlx::query_as(
-        "WITH mine AS (
+const DASHBOARD_QUERY: &str = "WITH mine AS (
             SELECT t.id AS test_id, t.title, t.description, c.title AS course_title, t.time_limit_minutes, t.attempts_limit,
                    t.free_navigation, t.final_policy,
                    coalesce(t.questions_per_attempt, (SELECT count(*) FROM questions q WHERE q.test_id = t.id))::bigint AS question_count,
@@ -101,11 +99,16 @@ pub(crate) async fn dashboard(State(state): State<AppState>, user: CurrentUser) 
              ORDER BY a.submitted_at DESC LIMIT 1) AS last_submitted_id,
             coalesce((SELECT array_agg(a.score ORDER BY a.submitted_at) FROM attempts a WHERE a.test_id = mine.test_id AND a.user_id = $1
                       AND NOT a.is_preview AND a.submitted_at IS NOT NULL), '{}') AS scores
-         FROM mine ORDER BY mine.course_title, mine.title",
-    )
-    .bind(user.id)
-    .fetch_all(&state.db)
-    .await?;
+         FROM mine ORDER BY mine.course_title, mine.title";
+
+/// Доступные, запланированные и пройденные тесты студента.
+#[utoipa::path(get, path = "/api/dashboard", tag = "attempts", responses((status = 200, body = Dashboard)))]
+pub(crate) async fn dashboard(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> ApiResult<Json<Dashboard>> {
+    let rows: Vec<DashRow> =
+        sqlx::query_as(DASHBOARD_QUERY).bind(user.id).fetch_all(&state.db).await?;
     let mut tests = Vec::new();
     for row in rows {
         tests.push(enrich(&state, &user, row).await?);
@@ -113,20 +116,44 @@ pub(crate) async fn dashboard(State(state): State<AppState>, user: CurrentUser) 
     Ok(Json(group(tests, state.clock.now())))
 }
 
+/// Итог последней сданной попытки: доступность разбора и итоговый балл.
+#[derive(Default)]
+struct LastResult {
+    review: Option<ReviewAvailability>,
+    final_score: Option<Decimal>,
+}
+
+/// cancel-safe: yes — только чтение.
 async fn enrich(state: &AppState, user: &CurrentUser, row: DashRow) -> ApiResult<DashboardTest> {
-    let (review, final_score) = match row.last_submitted_id {
-        Some(attempt_id) => {
-            let mut connection = state.db.acquire().await?;
-            let attempt: AttemptRow = own_attempt(&mut connection, user, attempt_id, false).await?;
-            let test = model::load_test(&mut *connection, row.test_id).await?;
-            let availability = review::availability(&mut connection, &test, &attempt, state.clock.now()).await?;
-            let policy = FinalScorePolicy::parse(&row.final_policy).unwrap_or(FinalScorePolicy::Best);
-            let score = scoring::final_score(policy, &row.scores).filter(|_| availability.available).map(|score| score.normalize());
-            (Some(availability), score)
-        }
-        None => (None, None),
+    let last = match row.last_submitted_id {
+        Some(attempt_id) => last_result(state, user, &row, attempt_id).await?,
+        None => LastResult::default(),
     };
-    Ok(DashboardTest {
+    Ok(into_test(row, last))
+}
+
+/// cancel-safe: yes — только чтение.
+async fn last_result(
+    state: &AppState,
+    user: &CurrentUser,
+    row: &DashRow,
+    attempt_id: Uuid,
+) -> ApiResult<LastResult> {
+    let mut connection = state.db.acquire().await?;
+    let attempt: AttemptRow =
+        own_attempt(&mut connection, user, attempt_id, ReadMode::Plain).await?;
+    let test = model::load_test(&mut *connection, row.test_id).await?;
+    let availability =
+        review::availability(&mut connection, &test, &attempt, state.clock.now()).await?;
+    let policy = FinalScorePolicy::parse(&row.final_policy).unwrap_or(FinalScorePolicy::Best);
+    let score = scoring::final_score(policy, &row.scores)
+        .filter(|_| availability.available)
+        .map(|score| score.normalize());
+    Ok(LastResult { review: Some(availability), final_score: score })
+}
+
+fn into_test(row: DashRow, last: LastResult) -> DashboardTest {
+    DashboardTest {
         test_id: row.test_id,
         title: row.title,
         description: row.description,
@@ -141,20 +168,23 @@ async fn enrich(state: &AppState, user: &CurrentUser, row: DashRow) -> ApiResult
         closes_at: row.closes_at,
         active_attempt_id: row.active_attempt_id,
         last_submitted_attempt_id: row.last_submitted_id,
-        review,
-        final_score,
-    })
+        review: last.review,
+        final_score: last.final_score,
+    }
 }
 
 fn group(tests: Vec<DashboardTest>, now: OffsetDateTime) -> Dashboard {
-    let mut dashboard = Dashboard { available: Vec::new(), scheduled: Vec::new(), completed: Vec::new() };
+    let mut dashboard =
+        Dashboard { available: Vec::new(), scheduled: Vec::new(), completed: Vec::new() };
     for test in tests {
         let start = test.can_start();
         let planned = !test.is_open && test.opens_at.is_some_and(|opens| opens > now);
         let done = test.last_submitted_attempt_id.is_some();
         match (start, planned, done) {
             (true, _, true) => {
-                dashboard.completed.push(DashboardTest { review: test.review.clone(), ..clone_shallow(&test) });
+                dashboard
+                    .completed
+                    .push(DashboardTest { review: test.review.clone(), ..clone_shallow(&test) });
                 dashboard.available.push(test);
             }
             (true, _, false) => dashboard.available.push(test),

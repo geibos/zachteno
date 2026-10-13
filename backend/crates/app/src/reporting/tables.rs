@@ -1,5 +1,7 @@
 //! Таблица результатов теста и сводная таблица курса (spec results-reporting).
 
+use std::collections::HashMap;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use rust_decimal::Decimal;
@@ -11,9 +13,9 @@ use uuid::Uuid;
 
 use crate::access::{self, CourseRole};
 use crate::auth::session::CurrentUser;
-use crate::authoring::model;
+use crate::authoring::model::{self, QuestionDetail};
 use crate::error::ApiResult;
-use crate::reporting::data::{self, Cell, Results, ResultsQuery};
+use crate::reporting::data::{self, AttemptRecord, Cell, ResultRow, Results, ResultsQuery};
 use crate::state::AppState;
 
 /// Столбец-вопрос.
@@ -64,43 +66,56 @@ pub(crate) struct ResultsTable {
 }
 
 /// Строит таблицу из загруженных результатов.
-pub(crate) fn table(results: &Results) -> ResultsTable {
+pub(crate) fn table(report: &Results) -> ResultsTable {
     ResultsTable {
-        test_id: results.test.id,
-        title: results.test.title.clone(),
-        columns: (1_usize..)
-            .zip(&results.questions)
-            .map(|(number, question)| ColumnHeader {
-                question_id: question.id,
-                number,
-                body: question.body.clone(),
-                free_text: !question.kind.is_scored(),
-                weight: question.weight,
-            })
-            .collect(),
-        rows: results
-            .rows
-            .iter()
-            .map(|row| TableRow {
-                attempt_id: row.attempt.attempt_id,
-                user_id: row.attempt.user_id,
-                display_name: row.attempt.display_name.clone(),
-                email: row.attempt.email.clone(),
-                stream_name: row.attempt.stream_name.clone(),
-                removed: row.attempt.removed,
-                attempt_number: row.number,
-                started_at: row.attempt.started_at,
-                submitted_at: row.attempt.submitted_at,
-                duration_seconds: (row.attempt.submitted_at - row.attempt.started_at).whole_seconds(),
-                submit_reason: row.attempt.submit_reason.clone(),
-                score: row.attempt.score.normalize(),
-                max_score: row.attempt.max_score.normalize(),
-                final_score: row.final_score,
-                antifraud: row.attempt.has_links,
-                cells: results.cells(row),
-            })
-            .collect(),
+        test_id: report.test.id,
+        title: report.test.title.clone(),
+        columns: columns(&report.questions),
+        rows: report.rows.iter().map(|row| table_row(report, row)).collect(),
     }
+}
+
+fn columns(questions: &[QuestionDetail]) -> Vec<ColumnHeader> {
+    (1_usize..)
+        .zip(questions)
+        .map(|(number, question)| ColumnHeader {
+            question_id: question.id,
+            number,
+            body: question.body.clone(),
+            free_text: !question.kind.is_scored(),
+            weight: question.weight,
+        })
+        .collect()
+}
+
+fn table_row(report: &Results, row: &ResultRow) -> TableRow {
+    TableRow {
+        attempt_id: row.attempt.attempt_id,
+        user_id: row.attempt.user_id,
+        display_name: row.attempt.display_name.clone(),
+        email: row.attempt.email.clone(),
+        stream_name: row.attempt.stream_name.clone(),
+        removed: row.attempt.removed,
+        attempt_number: row.number,
+        started_at: row.attempt.started_at,
+        submitted_at: row.attempt.submitted_at,
+        duration_seconds: duration_seconds(&row.attempt),
+        submit_reason: row.attempt.submit_reason.clone(),
+        score: row.attempt.score.normalize(),
+        max_score: row.attempt.max_score.normalize(),
+        final_score: row.final_score,
+        antifraud: row.attempt.has_links,
+        cells: report.cells(row),
+    }
+}
+
+/// Длительность попытки в целых секундах (с отбрасыванием дробной части).
+fn duration_seconds(attempt: &AttemptRecord) -> i64 {
+    let nanos = attempt
+        .submitted_at
+        .unix_timestamp_nanos()
+        .saturating_sub(attempt.started_at.unix_timestamp_nanos());
+    i64::try_from(nanos.checked_div(1_000_000_000).unwrap_or_default()).unwrap_or(i64::MAX)
 }
 
 /// Результаты теста для преподавателя и методиста.
@@ -112,16 +127,21 @@ pub(crate) async fn test_results(
     Path(test_id): Path<Uuid>,
     Query(query): Query<ResultsQuery>,
 ) -> ApiResult<Json<ResultsTable>> {
-    let results = load_visible(&state, &user, test_id, &query).await?;
-    Ok(Json(table(&results)))
+    let report = load_visible(&state, &user, test_id, &query).await?;
+    Ok(Json(table(&report)))
 }
 
 /// Загружает результаты, проверив право видеть курс.
 ///
 /// cancel-safe: yes — только чтение.
-pub(crate) async fn load_visible(state: &AppState, user: &CurrentUser, test_id: Uuid, query: &ResultsQuery) -> ApiResult<Results> {
+pub(crate) async fn load_visible(
+    state: &AppState,
+    user: &CurrentUser,
+    test_id: Uuid,
+    query: &ResultsQuery,
+) -> ApiResult<Results> {
     let test = model::load_test(&state.db, test_id).await?;
-    let _role = access::require(access::course_role(&state.db, user, test.course_id).await?, CourseRole::can_view)?;
+    let _role = access::require_on(&state.db, user, test.course_id, CourseRole::can_view).await?;
     data::load(state, test, query).await
 }
 
@@ -175,54 +195,89 @@ pub(crate) async fn course_summary(
     Path(course_id): Path<Uuid>,
     Query(query): Query<ResultsQuery>,
 ) -> ApiResult<Json<CourseSummary>> {
-    let _role = access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_view)?;
+    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_view).await?;
     Ok(Json(build_summary(&state, course_id, &query).await?))
 }
+
+/// Итог студента по тесту для сводной таблицы.
+struct StudentFinal {
+    final_score: Option<Decimal>,
+    max_score: Decimal,
+    attempts: usize,
+}
+
+/// Итоги по паре (студент, тест).
+type Finals = HashMap<(Uuid, Uuid), StudentFinal>;
+
+const STUDENTS_QUERY: &str = "SELECT DISTINCT u.id AS user_id, u.display_name, u.email FROM stream_courses sc
+         JOIN stream_members m ON m.stream_id = sc.stream_id JOIN users u ON u.id = m.user_id
+         WHERE sc.course_id = $1 AND ($2::uuid IS NULL OR sc.stream_id = $2) ORDER BY u.display_name";
 
 /// Собирает сводную таблицу курса.
 ///
 /// cancel-safe: yes — только чтение.
-pub(crate) async fn build_summary(state: &AppState, course_id: Uuid, query: &ResultsQuery) -> ApiResult<CourseSummary> {
+pub(crate) async fn build_summary(
+    state: &AppState,
+    course_id: Uuid,
+    query: &ResultsQuery,
+) -> ApiResult<CourseSummary> {
     let tests: Vec<SummaryTest> = sqlx::query_as("SELECT id AS test_id, title FROM tests WHERE course_id = $1 AND status = 'published' ORDER BY position")
         .bind(course_id)
         .fetch_all(&state.db)
         .await?;
-    let students: Vec<Student> = sqlx::query_as(
-        "SELECT DISTINCT u.id AS user_id, u.display_name, u.email FROM stream_courses sc
-         JOIN stream_members m ON m.stream_id = sc.stream_id JOIN users u ON u.id = m.user_id
-         WHERE sc.course_id = $1 AND ($2::uuid IS NULL OR sc.stream_id = $2) ORDER BY u.display_name",
-    )
-    .bind(course_id)
-    .bind(query.stream_id)
-    .fetch_all(&state.db)
-    .await?;
-    let mut finals = std::collections::HashMap::new();
-    for test in &tests {
+    let students: Vec<Student> = sqlx::query_as(STUDENTS_QUERY)
+        .bind(course_id)
+        .bind(query.stream_id)
+        .fetch_all(&state.db)
+        .await?;
+    let finals = collect_finals(state, &tests, query).await?;
+    let rows = students.into_iter().map(|student| summary_row(student, &tests, &finals)).collect();
+    Ok(CourseSummary { tests, rows })
+}
+
+/// Итоги всех студентов по каждому тесту; при нескольких строках студента остаётся последняя.
+///
+/// cancel-safe: yes — только чтение.
+async fn collect_finals(
+    state: &AppState,
+    tests: &[SummaryTest],
+    query: &ResultsQuery,
+) -> ApiResult<Finals> {
+    let mut finals = Finals::new();
+    for test in tests {
         let row = model::load_test(&state.db, test.test_id).await?;
-        let results = data::load(state, row, query).await?;
-        for result in results.rows {
-            let _previous = finals.insert((result.attempt.user_id, test.test_id), (result.final_score, result.attempt.max_score, result.number));
+        let report = data::load(state, row, query).await?;
+        for graded in report.rows {
+            let _previous = finals.insert(
+                (graded.attempt.user_id, test.test_id),
+                StudentFinal {
+                    final_score: graded.final_score,
+                    max_score: graded.attempt.max_score,
+                    attempts: graded.number,
+                },
+            );
         }
     }
-    let rows = students
-        .into_iter()
-        .map(|student| SummaryRow {
-            cells: tests
-                .iter()
-                .map(|test| {
-                    let found = finals.get(&(student.user_id, test.test_id));
-                    SummaryCell {
-                        test_id: test.test_id,
-                        final_score: found.and_then(|cell| cell.0),
-                        max_score: found.map(|cell| cell.1.normalize()),
-                        attempts: found.map_or(0, |cell| i64::try_from(cell.2).unwrap_or(0)),
-                    }
-                })
-                .collect(),
-            user_id: student.user_id,
-            display_name: student.display_name,
-            email: student.email,
+    Ok(finals)
+}
+
+fn summary_row(student: Student, tests: &[SummaryTest], finals: &Finals) -> SummaryRow {
+    let cells = tests
+        .iter()
+        .map(|test| {
+            let found = finals.get(&(student.user_id, test.test_id));
+            SummaryCell {
+                test_id: test.test_id,
+                final_score: found.and_then(|cell| cell.final_score),
+                max_score: found.map(|cell| cell.max_score.normalize()),
+                attempts: found.map_or(0, |cell| i64::try_from(cell.attempts).unwrap_or(0)),
+            }
         })
         .collect();
-    Ok(CourseSummary { tests, rows })
+    SummaryRow {
+        user_id: student.user_id,
+        display_name: student.display_name,
+        email: student.email,
+        cells,
+    }
 }

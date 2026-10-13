@@ -20,8 +20,15 @@ fn exif_is_stripped_from_jpeg() {
     let upload = jpeg_with_exif();
     assert!(upload.windows(10).any(|window| window == b"GPS-SECRET"), "исходник с EXIF");
     let processed = process(&upload).unwrap();
-    assert!(!processed.bytes.windows(10).any(|window| window == b"GPS-SECRET"), "метаданные удалены");
-    assert_eq!((processed.width, processed.height, processed.content_type), (16, 8, "image/jpeg"), "размер");
+    assert!(
+        !processed.bytes.windows(10).any(|window| window == b"GPS-SECRET"),
+        "метаданные удалены"
+    );
+    assert_eq!(
+        (processed.width, processed.height, processed.content_type),
+        (16, 8, "image/jpeg"),
+        "размер"
+    );
 }
 
 #[test]

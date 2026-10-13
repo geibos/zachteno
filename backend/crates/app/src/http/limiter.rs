@@ -9,12 +9,15 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 mod tests;
 
+/// Теоретическое время следующего прихода по каждому ключу.
+type Arrivals<Key> = Mutex<HashMap<Key, Instant>>;
+
 /// GCRA: `burst` запросов подряд, дальше один раз в `interval`.
 #[derive(Debug)]
 pub(crate) struct Limiter<Key = IpAddr> {
     interval: Duration,
     burst: u32,
-    arrivals: Mutex<HashMap<Key, Instant>>,
+    arrivals: Arrivals<Key>,
 }
 
 impl<Key: Hash + Eq + Clone> Limiter<Key> {
@@ -31,7 +34,9 @@ impl<Key: Hash + Eq + Clone> Limiter<Key> {
         if allowed_at > now {
             return Err(allowed_at.saturating_duration_since(now));
         }
-        let _previous = arrivals.insert(key.clone(), theoretical + self.interval);
+        let next = theoretical.checked_add(self.interval).unwrap_or(theoretical);
+        let _previous = arrivals.insert(key.clone(), next);
+        drop(arrivals);
         Ok(())
     }
 }
@@ -40,15 +45,18 @@ impl<Key: Hash + Eq + Clone> Limiter<Key> {
 /// чтобы пауза не выдавала, есть ли такая учётная запись.
 #[derive(Debug, Default)]
 pub(crate) struct LoginFailures {
-    failures: Mutex<HashMap<String, (u32, Instant)>>,
+    failures: Failures,
 }
+
+/// Число неудач подряд и время последней по каждому адресу.
+type Failures = Mutex<HashMap<String, (u32, Instant)>>;
 
 /// После стольких неудач подряд включается нарастающая пауза.
 pub(crate) const FREE_FAILURES: u32 = 5;
 /// Первая пауза после серии неудач; дальше удваивается.
 const BASE_BACKOFF: Duration = Duration::from_secs(30);
 /// Верхняя граница паузы.
-const MAX_BACKOFF: Duration = Duration::from_secs(900);
+const MAX_BACKOFF: Duration = Duration::from_mins(15);
 
 impl LoginFailures {
     /// Атомарно резервирует попытку входа: при действующей паузе — `Err(wait)`,
@@ -58,19 +66,25 @@ impl LoginFailures {
         let mut failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         let slot = failures.entry(email.to_owned()).or_insert((0, now));
         if let Some(excess) = slot.0.checked_sub(FREE_FAILURES) {
-            let pause = BASE_BACKOFF.saturating_mul(2_u32.saturating_pow(excess.min(10))).min(MAX_BACKOFF);
-            let allowed_at = slot.1 + pause;
+            let pause =
+                BASE_BACKOFF.saturating_mul(2_u32.saturating_pow(excess.min(10))).min(MAX_BACKOFF);
+            let allowed_at = slot.1.checked_add(pause).unwrap_or(slot.1);
             if allowed_at > now {
                 return Err(allowed_at.saturating_duration_since(now));
             }
         }
         *slot = (slot.0.saturating_add(1), now);
+        drop(failures);
         Ok(())
     }
 
     /// Число неудач подряд для адреса.
     pub(crate) fn count(&self, email: &str) -> u32 {
-        self.failures.lock().unwrap_or_else(PoisonError::into_inner).get(email).map_or(0, |slot| slot.0)
+        self.failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(email)
+            .map_or(0, |slot| slot.0)
     }
 
     /// Сбрасывает счётчик после успешного входа.

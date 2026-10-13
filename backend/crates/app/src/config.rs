@@ -56,7 +56,6 @@ pub(crate) struct Secrets {
     pub signal_key: Secret<Vec<u8>>,
 }
 
-
 /// S3-совместимое хранилище картинок.
 #[derive(Debug, Clone)]
 pub(crate) struct StorageConfig {
@@ -67,7 +66,6 @@ pub(crate) struct StorageConfig {
     pub secret_access_key: Secret<String>,
 }
 
-
 /// Отправка писем.
 #[derive(Debug, Clone)]
 pub(crate) enum MailConfig {
@@ -76,7 +74,6 @@ pub(crate) enum MailConfig {
     /// Письма складываются файлами в каталог (разработка).
     Directory { path: String, from: String },
 }
-
 
 /// OAuth-клиент внешнего провайдера.
 #[derive(Debug, Clone)]
@@ -87,7 +84,6 @@ pub(crate) struct OAuthClient {
     pub token_url: String,
     pub userinfo_url: String,
 }
-
 
 impl Config {
     /// Читает конфигурацию; без перца и ключа сигналов запуск невозможен.
@@ -121,7 +117,9 @@ fn http_from_env() -> anyhow::Result<HttpConfig> {
     Ok(HttpConfig {
         bind: optional("BIND", "0.0.0.0:8080").parse()?,
         metrics_bind: optional("METRICS_BIND", "127.0.0.1:9100").parse()?,
-        public_url: optional("PUBLIC_URL", "http://localhost:8080").trim_end_matches('/').to_owned(),
+        public_url: optional("PUBLIC_URL", "http://localhost:8080")
+            .trim_end_matches('/')
+            .to_owned(),
         extra_origins: optional("EXTRA_ORIGINS", "")
             .split(',')
             .map(str::trim)
@@ -164,7 +162,8 @@ pub(crate) fn parse_peppers(list: &str) -> anyhow::Result<PepperMap> {
 }
 
 fn parse_pepper(part: &str) -> anyhow::Result<Pepper> {
-    let (version, encoded) = part.split_once(':').context("PASSWORD_PEPPERS: нужен формат N:base64")?;
+    let (version, encoded) =
+        part.split_once(':').context("PASSWORD_PEPPERS: нужен формат N:base64")?;
     let secret = STANDARD.decode(encoded).context("PASSWORD_PEPPERS: base64")?;
     if secret.len() < 32 {
         bail!("перец версии {version} короче 32 байт");
@@ -192,14 +191,17 @@ fn mail_from_env() -> anyhow::Result<MailConfig> {
             password: Secret::new(required("SMTP_PASSWORD")?),
             from,
         }),
-        "directory" => Ok(MailConfig::Directory { path: optional("MAIL_DIR", "./data/mail"), from }),
+        "directory" => {
+            Ok(MailConfig::Directory { path: optional("MAIL_DIR", "./data/mail"), from })
+        }
         other => bail!("MAIL_MODE={other}: допустимо smtp или directory"),
     }
 }
 
 fn yandex_from_env() -> Option<OAuthClient> {
     let client_id = env::var("YANDEX_CLIENT_ID").ok().filter(|client| !client.is_empty())?;
-    let client_secret = env::var("YANDEX_CLIENT_SECRET").ok().filter(|secret| !secret.is_empty())?;
+    let client_secret =
+        env::var("YANDEX_CLIENT_SECRET").ok().filter(|secret| !secret.is_empty())?;
     Some(OAuthClient {
         client_id,
         client_secret: Secret::new(client_secret),

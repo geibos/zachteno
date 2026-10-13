@@ -78,7 +78,8 @@ impl IntoResponse for AppError {
         }
         let (status, code) = self.parts();
         let message = self.to_string();
-        let mut response = (status, Json(ErrorBody { error: code, message: &message })).into_response();
+        let mut response =
+            (status, Json(ErrorBody { error: code, message: &message })).into_response();
         if let Self::TooManyRequests { retry_after_secs } = self
             && let Ok(header_value) = HeaderValue::from_str(&retry_after_secs.to_string())
         {

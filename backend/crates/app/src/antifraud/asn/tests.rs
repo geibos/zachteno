@@ -10,7 +10,11 @@ const SAMPLE: &str = "94.19.0.0\t94.19.255.255\t35807\tRU\tSkyNet Networks\n\
 fn lookup_finds_asn_and_hosting_flag() {
     let table = AsnTable::from_lines(SAMPLE);
     let home = table.lookup("203.0.113.10".parse::<IpAddr>().unwrap()).unwrap();
-    assert_eq!((home.asn, home.country.as_str(), home.hosting), (35807, "RU", false), "домашний провайдер");
+    assert_eq!(
+        (home.asn, home.country.as_str(), home.hosting),
+        (35807, "RU", false),
+        "домашний провайдер"
+    );
     let vps = table.lookup("5.188.10.1".parse::<IpAddr>().unwrap()).unwrap();
     assert!(vps.hosting, "хостинг");
     assert_eq!(table.lookup("203.0.113.5".parse::<IpAddr>().unwrap()), None, "не маршрутизируется");

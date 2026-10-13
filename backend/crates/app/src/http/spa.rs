@@ -1,4 +1,4 @@
-//! Раздача собранного фронтенда (SvelteKit, adapter-static) с SPA-fallback.
+//! Раздача собранного фронтенда (`SvelteKit`, adapter-static) с SPA-fallback.
 //!
 //! CSP строится один раз: в `script-src` попадают хеши inline-скриптов `index.html`.
 
@@ -9,18 +9,15 @@ use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use rust_embed::Embed;
 use sha2::{Digest as _, Sha256};
 
 use crate::error::AppError;
 
+mod assets;
 #[cfg(test)]
 mod tests;
 
-#[derive(Embed)]
-#[folder = "../../../frontend/build"]
-#[allow_missing = true]
-struct Assets;
+use assets::Assets;
 
 /// Политика CSP для страниц приложения.
 static CSP: LazyLock<String> = LazyLock::new(|| {
@@ -30,9 +27,12 @@ static CSP: LazyLock<String> = LazyLock::new(|| {
 
 /// CSP с хешами inline-скриптов страницы.
 pub(crate) fn content_security_policy(page: &str) -> String {
-    let hashes: String = inline_scripts(page)
-        .map(|script| format!(" 'sha256-{}'", STANDARD.encode(Sha256::digest(script.as_bytes()))))
-        .collect();
+    let mut hashes = String::new();
+    for script in inline_scripts(page) {
+        hashes.push_str(" 'sha256-");
+        hashes.push_str(&STANDARD.encode(Sha256::digest(script.as_bytes())));
+        hashes.push('\'');
+    }
     format!(
         "default-src 'self'; script-src 'self'{hashes}; style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; \

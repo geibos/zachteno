@@ -60,7 +60,10 @@ impl AuditEntry {
     /// Сохраняет запись.
     ///
     /// cancel-safe: yes — один INSERT.
-    pub(crate) async fn record<'conn>(self, executor: impl PgExecutor<'conn>) -> Result<(), sqlx::Error> {
+    pub(crate) async fn record<'conn>(
+        self,
+        executor: impl PgExecutor<'conn>,
+    ) -> Result<(), sqlx::Error> {
         let _done = sqlx::query(
             "INSERT INTO audit_log (actor_id, action, object_type, object_id, course_id, details, ip)
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -82,7 +85,9 @@ use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use time::OffsetDateTime;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::access::{self, CourseRole};
 use crate::auth::session::CurrentUser;
@@ -90,7 +95,7 @@ use crate::error::{ApiResult, AppError};
 use crate::state::AppState;
 
 /// Фильтры журнала.
-#[derive(Debug, Deserialize, IntoParams)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct AuditQuery {
     pub course_id: Option<Uuid>,
@@ -127,33 +132,45 @@ pub(crate) async fn list(
     user: CurrentUser,
     Query(query): Query<AuditQuery>,
 ) -> ApiResult<axum::Json<Vec<AuditRecord>>> {
-    if !user.roles.superuser {
-        let course_id = query.course_id.ok_or(AppError::Forbidden)?;
-        let _role = access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_edit)?;
-    }
-    let records = sqlx::query_as(
-        "SELECT l.id, l.actor_id, u.display_name AS actor_name, l.action, l.object_type, l.object_id, l.course_id,
+    ensure_can_read(&state, &user, &query).await?;
+    let records = sqlx::query_as(AUDIT_QUERY)
+        .bind(query.course_id)
+        .bind(query.actor_id)
+        .bind(query.action.as_deref())
+        .bind(query.object_id)
+        .bind(query.from)
+        .bind(query.to)
+        .fetch_all(&state.db)
+        .await?;
+    Ok(axum::Json(records))
+}
+
+const AUDIT_QUERY: &str = "SELECT l.id, l.actor_id, u.display_name AS actor_name, l.action, l.object_type, l.object_id, l.course_id,
                 l.details, host(l.ip) AS ip, l.at
          FROM audit_log l LEFT JOIN users u ON u.id = l.actor_id
          WHERE ($1::uuid IS NULL OR l.course_id = $1) AND ($2::uuid IS NULL OR l.actor_id = $2)
            AND ($3::text IS NULL OR l.action = $3) AND ($4::uuid IS NULL OR l.object_id = $4)
            AND ($5::timestamptz IS NULL OR l.at >= $5) AND ($6::timestamptz IS NULL OR l.at <= $6)
-         ORDER BY l.at DESC, l.id DESC LIMIT 500",
-    )
-    .bind(query.course_id)
-    .bind(query.actor_id)
-    .bind(query.action.as_deref())
-    .bind(query.object_id)
-    .bind(query.from)
-    .bind(query.to)
-    .fetch_all(&state.db)
-    .await?;
-    Ok(axum::Json(records))
+         ORDER BY l.at DESC, l.id DESC LIMIT 500";
+
+/// Не суперпользователю — только журнал своего курса, который он может править.
+///
+/// cancel-safe: yes — только чтение.
+async fn ensure_can_read(
+    state: &AppState,
+    user: &CurrentUser,
+    query: &AuditQuery,
+) -> ApiResult<()> {
+    if !user.roles.superuser {
+        let course_id = query.course_id.ok_or(AppError::Forbidden)?;
+        let _role = access::require_on(&state.db, user, course_id, CourseRole::can_edit).await?;
+    }
+    Ok(())
 }
 
 /// Маршруты журнала.
-pub(crate) fn routes() -> utoipa_axum::router::OpenApiRouter<AppState> {
-    utoipa_axum::router::OpenApiRouter::new().routes(utoipa_axum::routes!(list))
+pub(crate) fn routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().routes(routes!(list))
 }
 
 #[cfg(test)]

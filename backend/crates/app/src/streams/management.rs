@@ -14,7 +14,7 @@ use crate::audit::AuditEntry;
 use crate::auth::session::CurrentUser;
 use crate::authoring::courses::{Created, non_empty};
 use crate::error::{ApiResult, AppError};
-use crate::http::extract::ClientIp;
+use crate::http::extract::{ClientIp, PathPair};
 use crate::state::AppState;
 use crate::streams::access::{can_create, require_manager};
 
@@ -31,7 +31,10 @@ pub(crate) struct StreamSummary {
 
 /// Потоки, которыми я управляю.
 #[utoipa::path(get, path = "/api/streams", tag = "streams", responses((status = 200, body = [StreamSummary])))]
-pub(crate) async fn list_streams(State(state): State<AppState>, user: CurrentUser) -> ApiResult<Json<Vec<StreamSummary>>> {
+pub(crate) async fn list_streams(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> ApiResult<Json<Vec<StreamSummary>>> {
     let streams = sqlx::query_as(
         "SELECT s.id, s.name, s.created_at,
                 (SELECT count(*) FROM stream_members m WHERE m.stream_id = s.id AND m.removed_at IS NULL) AS members,
@@ -69,12 +72,17 @@ pub(crate) async fn create_stream(
     }
     let name = non_empty(&request.name, "Название потока")?;
     let mut tx = state.db.begin().await?;
-    let id: Uuid = sqlx::query_scalar("INSERT INTO streams (name, created_by) VALUES ($1, $2) RETURNING id")
-        .bind(name)
-        .bind(user.id)
-        .fetch_one(&mut *tx)
+    let id: Uuid =
+        sqlx::query_scalar("INSERT INTO streams (name, created_by) VALUES ($1, $2) RETURNING id")
+            .bind(name)
+            .bind(user.id)
+            .fetch_one(&mut *tx)
+            .await?;
+    AuditEntry::new("stream.create", "stream")
+        .by(Some(user.id), Some(ip))
+        .on(id)
+        .record(&mut *tx)
         .await?;
-    AuditEntry::new("stream.create", "stream").by(Some(user.id), Some(ip)).on(id).record(&mut *tx).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(Created { id })))
 }
@@ -109,6 +117,15 @@ pub(crate) struct StreamDetail {
     pub members: Vec<Member>,
 }
 
+const STREAM_COURSES: &str =
+    "SELECT c.id AS course_id, c.title FROM stream_courses sc JOIN courses c ON c.id = sc.course_id
+         WHERE sc.stream_id = $1 ORDER BY c.title";
+
+const STREAM_MEMBERS: &str = "SELECT u.id AS user_id, u.email, u.display_name, u.email_verified_at IS NOT NULL AS email_verified,
+                u.trusted_registration, m.joined_at, m.removed_at
+         FROM stream_members m JOIN users u ON u.id = m.user_id WHERE m.stream_id = $1
+         ORDER BY m.removed_at IS NOT NULL, u.display_name";
+
 /// Поток: курсы и участники.
 #[utoipa::path(get, path = "/api/streams/{stream_id}", tag = "streams", params(("stream_id" = Uuid, Path)),
     responses((status = 200, body = StreamDetail)))]
@@ -118,23 +135,12 @@ pub(crate) async fn get_stream(
     Path(stream_id): Path<Uuid>,
 ) -> ApiResult<Json<StreamDetail>> {
     require_manager(&state.db, &user, stream_id).await?;
-    let name: String = sqlx::query_scalar("SELECT name FROM streams WHERE id = $1").bind(stream_id).fetch_one(&state.db).await?;
-    let courses = sqlx::query_as(
-        "SELECT c.id AS course_id, c.title FROM stream_courses sc JOIN courses c ON c.id = sc.course_id
-         WHERE sc.stream_id = $1 ORDER BY c.title",
-    )
-    .bind(stream_id)
-    .fetch_all(&state.db)
-    .await?;
-    let members = sqlx::query_as(
-        "SELECT u.id AS user_id, u.email, u.display_name, u.email_verified_at IS NOT NULL AS email_verified,
-                u.trusted_registration, m.joined_at, m.removed_at
-         FROM stream_members m JOIN users u ON u.id = m.user_id WHERE m.stream_id = $1
-         ORDER BY m.removed_at IS NOT NULL, u.display_name",
-    )
-    .bind(stream_id)
-    .fetch_all(&state.db)
-    .await?;
+    let name: String = sqlx::query_scalar("SELECT name FROM streams WHERE id = $1")
+        .bind(stream_id)
+        .fetch_one(&state.db)
+        .await?;
+    let courses = sqlx::query_as(STREAM_COURSES).bind(stream_id).fetch_all(&state.db).await?;
+    let members = sqlx::query_as(STREAM_MEMBERS).bind(stream_id).fetch_all(&state.db).await?;
     Ok(Json(StreamDetail { id: stream_id, name, courses, members }))
 }
 
@@ -153,11 +159,9 @@ pub(crate) async fn assign_course(
     Path(stream_id): Path<Uuid>,
     Json(request): Json<CourseRef>,
 ) -> ApiResult<StatusCode> {
-    access::require(access::course_role(&state.db, &user, request.course_id).await?, CourseRole::can_manage)?;
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM streams WHERE id = $1)").bind(stream_id).fetch_one(&state.db).await?;
-    if !exists {
-        return Err(AppError::NotFound);
-    }
+    let _role =
+        access::require_on(&state.db, &user, request.course_id, CourseRole::can_manage).await?;
+    ensure_stream(&state, stream_id).await?;
     let mut tx = state.db.begin().await?;
     let _inserted = sqlx::query("INSERT INTO stream_courses (stream_id, course_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
         .bind(stream_id)
@@ -165,9 +169,25 @@ pub(crate) async fn assign_course(
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
-    AuditEntry::new("stream.assign_course", "stream").by(Some(user.id), Some(ip)).on(stream_id).in_course(request.course_id).record(&mut *tx).await?;
+    AuditEntry::new("stream.assign_course", "stream")
+        .by(Some(user.id), Some(ip))
+        .on(stream_id)
+        .in_course(request.course_id)
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// «Не найдено», если потока нет.
+///
+/// cancel-safe: yes — только чтение.
+async fn ensure_stream(state: &AppState, stream_id: Uuid) -> ApiResult<()> {
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM streams WHERE id = $1)")
+        .bind(stream_id)
+        .fetch_one(&state.db)
+        .await?;
+    if exists { Ok(()) } else { Err(AppError::NotFound) }
 }
 
 /// Снимает поток с курса.
@@ -176,19 +196,27 @@ pub(crate) async fn assign_course(
 pub(crate) async fn unassign_course(
     State(state): State<AppState>,
     (user, ClientIp(ip)): (CurrentUser, ClientIp),
-    Path((stream_id, course_id)): Path<(Uuid, Uuid)>,
+    Path((stream_id, course_id)): PathPair,
 ) -> ApiResult<StatusCode> {
-    access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_manage)?;
+    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_manage).await?;
     let mut tx = state.db.begin().await?;
-    let _deleted = sqlx::query("DELETE FROM stream_courses WHERE stream_id = $1 AND course_id = $2")
-        .bind(stream_id)
-        .bind(course_id)
-        .execute(&mut *tx)
+    let _deleted =
+        sqlx::query("DELETE FROM stream_courses WHERE stream_id = $1 AND course_id = $2")
+            .bind(stream_id)
+            .bind(course_id)
+            .execute(&mut *tx)
+            .await?;
+    AuditEntry::new("stream.unassign_course", "stream")
+        .by(Some(user.id), Some(ip))
+        .on(stream_id)
+        .in_course(course_id)
+        .record(&mut *tx)
         .await?;
-    AuditEntry::new("stream.unassign_course", "stream").by(Some(user.id), Some(ip)).on(stream_id).in_course(course_id).record(&mut *tx).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+const REMOVE_MEMBER: &str = "UPDATE stream_members SET removed_at = $3, removed_by = $4 WHERE stream_id = $1 AND user_id = $2 AND removed_at IS NULL";
 
 /// Исключает студента: доступ к тестам потока пропадает, попытки остаются.
 #[utoipa::path(delete, path = "/api/streams/{stream_id}/members/{user_id}", tag = "streams",
@@ -196,20 +224,23 @@ pub(crate) async fn unassign_course(
 pub(crate) async fn remove_member(
     State(state): State<AppState>,
     (user, ClientIp(ip)): (CurrentUser, ClientIp),
-    Path((stream_id, member_id)): Path<(Uuid, Uuid)>,
+    Path((stream_id, member_id)): PathPair,
 ) -> ApiResult<StatusCode> {
     require_manager(&state.db, &user, stream_id).await?;
     let mut tx = state.db.begin().await?;
-    let _updated = sqlx::query(
-        "UPDATE stream_members SET removed_at = $3, removed_by = $4 WHERE stream_id = $1 AND user_id = $2 AND removed_at IS NULL",
-    )
-    .bind(stream_id)
-    .bind(member_id)
-    .bind(state.clock.now())
-    .bind(user.id)
-    .execute(&mut *tx)
-    .await?;
-    AuditEntry::new("stream.remove_member", "user").by(Some(user.id), Some(ip)).on(member_id).with(serde_json::json!({ "stream_id": stream_id })).record(&mut *tx).await?;
+    let _updated = sqlx::query(REMOVE_MEMBER)
+        .bind(stream_id)
+        .bind(member_id)
+        .bind(state.clock.now())
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    AuditEntry::new("stream.remove_member", "user")
+        .by(Some(user.id), Some(ip))
+        .on(member_id)
+        .with(serde_json::json!({ "stream_id": stream_id }))
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

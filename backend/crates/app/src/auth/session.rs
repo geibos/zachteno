@@ -51,6 +51,14 @@ pub(crate) struct CurrentUser {
     pub session_id: Uuid,
 }
 
+/// Признаки учётной записи, которые попадают в [`CurrentUser`].
+#[derive(FromRow)]
+struct AccountFlags {
+    email_verified: bool,
+    trusted_registration: bool,
+    has_password: bool,
+}
+
 #[derive(FromRow)]
 struct SessionRow {
     session_id: Uuid,
@@ -59,9 +67,8 @@ struct SessionRow {
     display_name: String,
     last_seen_at: OffsetDateTime,
     blocked: bool,
-    email_verified: bool,
-    trusted_registration: bool,
-    has_password: bool,
+    #[sqlx(flatten)]
+    flags: AccountFlags,
     roles: Vec<String>,
 }
 
@@ -79,28 +86,46 @@ const SESSION_QUERY: &str = "
 /// Пользователь по cookie сессии; `None`, если сессии нет, она истекла или аккаунт заблокирован.
 ///
 /// cancel-safe: yes — чтение и идемпотентное обновление `last_seen_at`.
-pub(crate) async fn authenticate(state: &AppState, headers: &HeaderMap) -> ApiResult<Option<CurrentUser>> {
+pub(crate) async fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> ApiResult<Option<CurrentUser>> {
     let Some(raw) = session_cookie(headers) else {
         return Ok(None);
     };
     let hash = tokens::digest(&raw);
-    let row: Option<SessionRow> = sqlx::query_as(SESSION_QUERY).bind(&hash).fetch_optional(&state.db).await?;
+    let found: Option<SessionRow> =
+        sqlx::query_as(SESSION_QUERY).bind(&hash).fetch_optional(&state.db).await?;
     let now = state.clock.now();
-    let Some(row) = row.filter(|found| !found.blocked && is_fresh(found.last_seen_at, now)) else {
+    let Some(row) = found.filter(|session| !session.blocked && is_fresh(session.last_seen_at, now))
+    else {
         return Ok(None);
     };
-    if now - row.last_seen_at > Duration::minutes(TOUCH_MINUTES) {
+    touch(state, &hash, row.last_seen_at, now).await?;
+    Ok(Some(into_user(row)))
+}
+
+/// Обновляет `last_seen_at`, если с прошлого обновления прошло больше `TOUCH_MINUTES`.
+///
+/// cancel-safe: yes — идемпотентный UPDATE.
+async fn touch(
+    state: &AppState,
+    hash: &[u8],
+    last_seen_at: OffsetDateTime,
+    now: OffsetDateTime,
+) -> ApiResult<()> {
+    if now > last_seen_at.saturating_add(Duration::minutes(TOUCH_MINUTES)) {
         let _touched = sqlx::query("UPDATE sessions SET last_seen_at = $2 WHERE token_hash = $1")
-            .bind(&hash)
+            .bind(hash)
             .bind(now)
             .execute(&state.db)
             .await?;
     }
-    Ok(Some(into_user(row)))
+    Ok(())
 }
 
 fn is_fresh(last_seen_at: OffsetDateTime, now: OffsetDateTime) -> bool {
-    now - last_seen_at <= Duration::days(IDLE_DAYS)
+    now <= last_seen_at.saturating_add(Duration::days(IDLE_DAYS))
 }
 
 fn into_user(row: SessionRow) -> CurrentUser {
@@ -109,9 +134,9 @@ fn into_user(row: SessionRow) -> CurrentUser {
         email: row.email,
         display_name: row.display_name,
         roles: Roles::from_names(&row.roles),
-        email_verified: row.email_verified,
-        trusted_registration: row.trusted_registration,
-        has_password: row.has_password,
+        email_verified: row.flags.email_verified,
+        trusted_registration: row.flags.trusted_registration,
+        has_password: row.flags.has_password,
         session_id: row.session_id,
     }
 }
@@ -174,7 +199,7 @@ pub(crate) async fn start<'conn>(
 }
 
 /// `Set-Cookie`, удаляющий сессию в браузере.
-pub(crate) fn clear_cookie() -> HeaderValue {
+pub(crate) const fn clear_cookie() -> HeaderValue {
     HeaderValue::from_static("__Host-session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0")
 }
 
@@ -186,11 +211,12 @@ pub(crate) async fn revoke_all_except<'conn>(
     user_id: Uuid,
     keep: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
-    let _deleted = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND ($2::uuid IS NULL OR id <> $2)")
-        .bind(user_id)
-        .bind(keep)
-        .execute(executor)
-        .await?;
+    let _deleted =
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND ($2::uuid IS NULL OR id <> $2)")
+            .bind(user_id)
+            .bind(keep)
+            .execute(executor)
+            .await?;
     Ok(())
 }
 

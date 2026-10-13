@@ -1,8 +1,11 @@
 //! Часы приложения: системные в работе, управляемые в тестах расписаний и сроков.
 
+#[cfg(test)]
 use std::sync::{Arc, Mutex, PoisonError};
 
-use time::{Duration, OffsetDateTime};
+#[cfg(test)]
+use time::Duration;
+use time::OffsetDateTime;
 
 /// Источник текущего времени.
 #[derive(Debug, Clone, Default)]
@@ -11,6 +14,7 @@ pub(crate) enum Clock {
     #[default]
     System,
     /// Время, которое двигают тесты.
+    #[cfg(test)]
     Manual(Arc<Mutex<OffsetDateTime>>),
 }
 
@@ -19,6 +23,7 @@ impl Clock {
     pub(crate) fn now(&self) -> OffsetDateTime {
         match self {
             Self::System => OffsetDateTime::now_utc(),
+            #[cfg(test)]
             Self::Manual(current) => *current.lock().unwrap_or_else(PoisonError::into_inner),
         }
     }
@@ -41,8 +46,3 @@ impl Clock {
 
 /// Московское время (UTC+3, без перехода на летнее время).
 pub(crate) const MSK_OFFSET_HOURS: i8 = 3;
-
-/// Длительность в сутках.
-pub(crate) const fn days(count: i64) -> Duration {
-    Duration::days(count)
-}

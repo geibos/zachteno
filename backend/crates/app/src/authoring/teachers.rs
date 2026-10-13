@@ -13,7 +13,7 @@ use crate::audit::AuditEntry;
 use crate::auth::account;
 use crate::auth::session::CurrentUser;
 use crate::error::{ApiResult, AppError};
-use crate::http::extract::ClientIp;
+use crate::http::extract::{ClientIp, PathPair};
 use crate::state::AppState;
 
 /// Преподаватель курса.
@@ -32,7 +32,7 @@ pub(crate) async fn list_teachers(
     user: CurrentUser,
     Path(course_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<Teacher>>> {
-    access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_view)?;
+    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_view).await?;
     let teachers = sqlx::query_as(
         "SELECT u.id AS user_id, u.email, u.display_name FROM course_teachers t JOIN users u ON u.id = t.user_id
          WHERE t.course_id = $1 ORDER BY u.display_name",
@@ -49,6 +49,8 @@ pub(crate) struct AssignTeacher {
     pub email: String,
 }
 
+const ASSIGN_TEACHER: &str = "INSERT INTO course_teachers (course_id, user_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING";
+
 /// Назначает преподавателя на свой курс по email зарегистрированного пользователя.
 #[utoipa::path(post, path = "/api/courses/{course_id}/teachers", tag = "courses", params(("course_id" = Uuid, Path)),
     request_body = AssignTeacher, responses((status = 204), (status = 404, description = "пользователь не найден")))]
@@ -58,23 +60,28 @@ pub(crate) async fn assign_teacher(
     Path(course_id): Path<Uuid>,
     Json(request): Json<AssignTeacher>,
 ) -> ApiResult<StatusCode> {
-    access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_edit)?;
+    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_edit).await?;
     let email = account::normalize_email(&request.email)?;
-    let teacher = account::find_for_login(&state.db, &email)
-        .await?
-        .ok_or_else(|| AppError::BadRequest("Пользователь с таким email не зарегистрирован".to_owned()))?;
+    let teacher = account::find_for_login(&state.db, &email).await?.ok_or_else(not_registered)?;
     let mut tx = state.db.begin().await?;
-    let _inserted = sqlx::query(
-        "INSERT INTO course_teachers (course_id, user_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-    )
-    .bind(course_id)
-    .bind(teacher.id)
-    .bind(user.id)
-    .execute(&mut *tx)
-    .await?;
-    AuditEntry::new("course.teacher_assign", "user").by(Some(user.id), Some(ip)).on(teacher.id).in_course(course_id).record(&mut *tx).await?;
+    let _inserted = sqlx::query(ASSIGN_TEACHER)
+        .bind(course_id)
+        .bind(teacher.id)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    AuditEntry::new("course.teacher_assign", "user")
+        .by(Some(user.id), Some(ip))
+        .on(teacher.id)
+        .in_course(course_id)
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn not_registered() -> AppError {
+    AppError::BadRequest("Пользователь с таким email не зарегистрирован".to_owned())
 }
 
 /// Снимает преподавателя с курса.
@@ -83,16 +90,21 @@ pub(crate) async fn assign_teacher(
 pub(crate) async fn remove_teacher(
     State(state): State<AppState>,
     (user, ClientIp(ip)): (CurrentUser, ClientIp),
-    Path((course_id, teacher_id)): Path<(Uuid, Uuid)>,
+    Path((course_id, teacher_id)): PathPair,
 ) -> ApiResult<StatusCode> {
-    access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_edit)?;
+    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_edit).await?;
     let mut tx = state.db.begin().await?;
     let _deleted = sqlx::query("DELETE FROM course_teachers WHERE course_id = $1 AND user_id = $2")
         .bind(course_id)
         .bind(teacher_id)
         .execute(&mut *tx)
         .await?;
-    AuditEntry::new("course.teacher_remove", "user").by(Some(user.id), Some(ip)).on(teacher_id).in_course(course_id).record(&mut *tx).await?;
+    AuditEntry::new("course.teacher_remove", "user")
+        .by(Some(user.id), Some(ip))
+        .on(teacher_id)
+        .in_course(course_id)
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -8,6 +8,7 @@ use domain::attempt_rules::{self, AttemptStatus, CurrentAnswer, Cursor, Navigati
 use domain::layout::PlacedQuestion;
 use domain::scoring::QuestionKind;
 use serde::{Deserialize, Serialize};
+use sqlx::types::Json as SqlJson;
 use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
@@ -15,8 +16,10 @@ use uuid::Uuid;
 
 use crate::attempts::lifecycle::{self, SubmitReason, log_event};
 use crate::auth::session::CurrentUser;
-use crate::authoring::model::{self, ImageRef, QuestionDetail};
+use crate::authoring::model::{self, ImageRef, QuestionDetail, TestRow};
+use crate::clock::Clock;
 use crate::error::{ApiResult, AppError};
+use crate::http::extract::PathPair;
 use crate::state::AppState;
 
 /// Попытка из базы.
@@ -24,39 +27,72 @@ use crate::state::AppState;
 pub(crate) struct AttemptRow {
     pub id: Uuid,
     pub test_id: Uuid,
-    pub user_id: Uuid,
     pub stream_id: Option<Uuid>,
     pub is_preview: bool,
-    pub started_at: OffsetDateTime,
     pub deadline_at: Option<OffsetDateTime>,
     pub submitted_at: Option<OffsetDateTime>,
     pub submit_reason: Option<String>,
-    pub layout: sqlx::types::Json<Vec<PlacedQuestion>>,
+    pub layout: SqlJson<Vec<PlacedQuestion>>,
     pub current_index: i32,
     pub lock_applied: bool,
     pub score: Option<rust_decimal::Decimal>,
     pub max_score: rust_decimal::Decimal,
 }
 
-const ATTEMPT_COLUMNS: &str = "id, test_id, user_id, stream_id, is_preview, started_at, deadline_at, submitted_at,
+const ATTEMPT_COLUMNS: &str = "id, test_id, stream_id, is_preview, deadline_at, submitted_at,
     submit_reason, layout, current_index, lock_applied, score, max_score";
 
 impl AttemptRow {
     pub(crate) const fn status(&self) -> AttemptStatus {
-        if self.submitted_at.is_some() { AttemptStatus::Submitted } else { AttemptStatus::InProgress }
+        if self.submitted_at.is_some() {
+            AttemptStatus::Submitted
+        } else {
+            AttemptStatus::InProgress
+        }
     }
 
     fn index_of(&self, question_id: Uuid) -> Option<usize> {
         self.layout.0.iter().position(|slot| slot.question_id == question_id)
     }
+
+    /// Положение студента с учётом режима навигации теста.
+    fn cursor(&self, test: &TestRow) -> Cursor {
+        Cursor {
+            navigation: navigation_of(test),
+            current_index: usize::try_from(self.current_index).unwrap_or(0),
+        }
+    }
+}
+
+/// Режим навигации теста.
+const fn navigation_of(test: &TestRow) -> Navigation {
+    if test.free_navigation { Navigation::Free } else { Navigation::Sequential }
+}
+
+/// Как читать строку попытки.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadMode {
+    /// Просто прочитать.
+    Plain,
+    /// Заблокировать строку до конца транзакции вызывающего.
+    ForUpdate,
 }
 
 /// Своя попытка пользователя (чужая — «не найдено»).
 ///
 /// cancel-safe: yes — только чтение (или блокировка строки в транзакции вызывающего).
-pub(crate) async fn own_attempt(executor: &mut PgConnection, user: &CurrentUser, attempt_id: Uuid, for_update: bool) -> ApiResult<AttemptRow> {
-    let lock = if for_update { " FOR UPDATE" } else { "" };
-    let query = format!("SELECT {ATTEMPT_COLUMNS} FROM attempts WHERE id = $1 AND user_id = $2{lock}");
+pub(crate) async fn own_attempt(
+    executor: &mut PgConnection,
+    user: &CurrentUser,
+    attempt_id: Uuid,
+    mode: ReadMode,
+) -> ApiResult<AttemptRow> {
+    let lock = match mode {
+        ReadMode::Plain => "",
+        ReadMode::ForUpdate => " FOR UPDATE",
+    };
+    let query =
+        format!("SELECT {ATTEMPT_COLUMNS} FROM attempts WHERE id = $1 AND user_id = $2{lock}");
     sqlx::query_as(sqlx::AssertSqlSafe(query))
         .bind(attempt_id)
         .bind(user.id)
@@ -141,35 +177,67 @@ pub(crate) async fn get_attempt(
     Path(attempt_id): Path<Uuid>,
 ) -> ApiResult<Json<AttemptView>> {
     let mut connection = state.db.acquire().await?;
-    let attempt = own_attempt(&mut connection, &user, attempt_id, false).await?;
+    Ok(Json(attempt_view(&mut connection, &user, attempt_id, &state.clock).await?))
+}
+
+/// cancel-safe: yes — только чтение.
+async fn attempt_view(
+    connection: &mut PgConnection,
+    user: &CurrentUser,
+    attempt_id: Uuid,
+    clock: &Clock,
+) -> ApiResult<AttemptView> {
+    let attempt = own_attempt(connection, user, attempt_id, ReadMode::Plain).await?;
     let test = model::load_test(&mut *connection, attempt.test_id).await?;
-    let questions = model::load_questions_in(&mut connection, attempt.test_id).await?;
-    let answers = sqlx::query_as(
-        "SELECT question_id, selected_option_ids, text_answer, client_seq, finalized FROM answers WHERE attempt_id = $1",
-    )
-    .bind(attempt_id)
-    .fetch_all(&mut *connection)
-    .await?;
-    let navigation = if test.free_navigation { Navigation::Free } else { Navigation::Sequential };
-    Ok(Json(AttemptView {
+    let questions = model::load_questions_in(connection, attempt.test_id).await?;
+    let answers = saved_answers(connection, attempt_id).await?;
+    let navigation = navigation_of(&test);
+    Ok(AttemptView {
         id: attempt.id,
         test_id: attempt.test_id,
         title: test.title,
         navigation,
         is_preview: attempt.is_preview,
-        server_now: state.clock.now(),
+        server_now: clock.now(),
         deadline_at: attempt.deadline_at,
         submitted_at: attempt.submitted_at,
         current_index: attempt.current_index,
         questions: runner_questions(&attempt.layout.0, &questions),
         answers,
-    }))
+    })
 }
 
-fn runner_questions(layout: &[PlacedQuestion], questions: &[QuestionDetail]) -> Vec<RunnerQuestion> {
-    layout
-        .iter()
-        .filter_map(|slot| questions.iter().find(|question| question.id == slot.question_id).map(|question| (slot, question)))
+/// cancel-safe: yes — только чтение.
+async fn saved_answers(
+    connection: &mut PgConnection,
+    attempt_id: Uuid,
+) -> ApiResult<Vec<SavedAnswer>> {
+    Ok(sqlx::query_as(
+        "SELECT question_id, selected_option_ids, text_answer, client_seq, finalized FROM answers WHERE attempt_id = $1",
+    )
+    .bind(attempt_id)
+    .fetch_all(&mut *connection)
+    .await?)
+}
+
+/// Вопросы раскладки вместе со своими слотами, в порядке раскладки.
+pub(crate) fn placed<'items>(
+    layout: &'items [PlacedQuestion],
+    questions: &'items [QuestionDetail],
+) -> impl Iterator<Item = (&'items PlacedQuestion, &'items QuestionDetail)> {
+    layout.iter().filter_map(|slot| {
+        questions
+            .iter()
+            .find(|question| question.id == slot.question_id)
+            .map(|question| (slot, question))
+    })
+}
+
+fn runner_questions(
+    layout: &[PlacedQuestion],
+    questions: &[QuestionDetail],
+) -> Vec<RunnerQuestion> {
+    placed(layout, questions)
         .enumerate()
         .map(|(index, (slot, question))| RunnerQuestion {
             id: question.id,
@@ -177,12 +245,19 @@ fn runner_questions(layout: &[PlacedQuestion], questions: &[QuestionDetail]) -> 
             choice: Choice::from(question.kind),
             body: question.body.clone(),
             image: question.image.clone(),
-            options: slot
-                .option_ids
-                .iter()
-                .filter_map(|option_id| question.options.iter().find(|option| option.id == *option_id))
-                .map(|option| RunnerOption { id: option.id, body: option.body.clone(), image: option.image.clone() })
-                .collect(),
+            options: runner_options(slot, question),
+        })
+        .collect()
+}
+
+fn runner_options(slot: &PlacedQuestion, question: &QuestionDetail) -> Vec<RunnerOption> {
+    slot.option_ids
+        .iter()
+        .filter_map(|option_id| question.options.iter().find(|option| option.id == *option_id))
+        .map(|option| RunnerOption {
+            id: option.id,
+            body: option.body.clone(),
+            image: option.image.clone(),
         })
         .collect()
 }
@@ -216,18 +291,16 @@ const MAX_TEXT_CHARS: usize = 10_000;
 pub(crate) async fn save_answer(
     State(state): State<AppState>,
     user: CurrentUser,
-    Path((attempt_id, question_id)): Path<(Uuid, Uuid)>,
+    Path((attempt_id, question_id)): PathPair,
     Json(input): Json<AnswerInput>,
 ) -> ApiResult<Json<AnswerSaved>> {
     let now = state.clock.now();
     let mut tx = state.db.begin().await?;
-    let attempt = own_attempt(&mut tx, &user, attempt_id, true).await?;
+    let attempt = own_attempt(&mut tx, &user, attempt_id, ReadMode::ForUpdate).await?;
     let test = model::load_test(&mut *tx, attempt.test_id).await?;
     ensure_accepting(&attempt, now)?;
     let index = attempt.index_of(question_id).ok_or(AppError::NotFound)?;
-    let navigation = if test.free_navigation { Navigation::Free } else { Navigation::Sequential };
-    let cursor = Cursor { navigation, current_index: usize::try_from(attempt.current_index).unwrap_or(0) };
-    if !cursor.can_answer(index) {
+    if !attempt.cursor(&test).can_answer(index) {
         return Err(AppError::Conflict("К этому вопросу вернуться нельзя".to_owned()));
     }
     let question = question_of(&mut tx, attempt.test_id, question_id).await?;
@@ -248,25 +321,45 @@ fn ensure_accepting(attempt: &AttemptRow, now: OffsetDateTime) -> ApiResult<()> 
     }
 }
 
-async fn question_of(tx: &mut PgConnection, test_id: Uuid, question_id: Uuid) -> ApiResult<QuestionDetail> {
-    model::load_questions_in(tx, test_id).await?.into_iter().find(|question| question.id == question_id).ok_or(AppError::NotFound)
+async fn question_of(
+    tx: &mut PgConnection,
+    test_id: Uuid,
+    question_id: Uuid,
+) -> ApiResult<QuestionDetail> {
+    model::load_questions_in(tx, test_id)
+        .await?
+        .into_iter()
+        .find(|question| question.id == question_id)
+        .ok_or(AppError::NotFound)
 }
 
 fn validate(question: &QuestionDetail, attempt: &AttemptRow, input: &AnswerInput) -> ApiResult<()> {
-    let allowed = attempt.layout.0.iter().find(|slot| slot.question_id == question.id).map(|slot| slot.option_ids.clone()).unwrap_or_default();
+    let allowed = attempt
+        .layout
+        .0
+        .iter()
+        .find(|slot| slot.question_id == question.id)
+        .map(|slot| slot.option_ids.clone())
+        .unwrap_or_default();
     if input.selected_option_ids.iter().any(|option_id| !allowed.contains(option_id)) {
         return Err(AppError::BadRequest("Вариант не из этого вопроса".to_owned()));
     }
     let too_many = question.kind == QuestionKind::Single && input.selected_option_ids.len() > 1;
     let text_len = input.text.as_deref().map_or(0, |text| text.chars().count());
-    let wrong_shape = question.kind == QuestionKind::FreeText && !input.selected_option_ids.is_empty();
+    let wrong_shape =
+        question.kind == QuestionKind::FreeText && !input.selected_option_ids.is_empty();
     if too_many || wrong_shape || text_len > MAX_TEXT_CHARS {
         return Err(AppError::BadRequest("Ответ не подходит к типу вопроса".to_owned()));
     }
     Ok(())
 }
 
-async fn upsert(tx: &mut PgConnection, attempt_id: Uuid, question_id: Uuid, (input, now): (&AnswerInput, OffsetDateTime)) -> ApiResult<()> {
+async fn upsert(
+    tx: &mut PgConnection,
+    attempt_id: Uuid,
+    question_id: Uuid,
+    (input, now): (&AnswerInput, OffsetDateTime),
+) -> ApiResult<()> {
     let _saved = sqlx::query(
         "INSERT INTO answers (attempt_id, question_id, selected_option_ids, text_answer, client_seq, saved_at)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -287,16 +380,24 @@ async fn upsert(tx: &mut PgConnection, attempt_id: Uuid, question_id: Uuid, (inp
 }
 
 /// Первый ответ попытки блокирует тест от правок (design D8). Предпросмотр не блокирует.
-async fn lock_test_once(tx: &mut PgConnection, attempt: &AttemptRow, now: OffsetDateTime) -> ApiResult<()> {
+async fn lock_test_once(
+    tx: &mut PgConnection,
+    attempt: &AttemptRow,
+    now: OffsetDateTime,
+) -> ApiResult<()> {
     if attempt.lock_applied || attempt.is_preview {
         return Ok(());
     }
-    let _locked = sqlx::query("UPDATE tests SET locked_at = $2 WHERE id = $1 AND locked_at IS NULL")
-        .bind(attempt.test_id)
-        .bind(now)
+    let _locked =
+        sqlx::query("UPDATE tests SET locked_at = $2 WHERE id = $1 AND locked_at IS NULL")
+            .bind(attempt.test_id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+    let _flag = sqlx::query("UPDATE attempts SET lock_applied = true WHERE id = $1")
+        .bind(attempt.id)
         .execute(&mut *tx)
         .await?;
-    let _flag = sqlx::query("UPDATE attempts SET lock_applied = true WHERE id = $1").bind(attempt.id).execute(&mut *tx).await?;
     Ok(())
 }
 
@@ -317,24 +418,52 @@ pub(crate) async fn navigate(
 ) -> ApiResult<StatusCode> {
     let now = state.clock.now();
     let mut tx = state.db.begin().await?;
-    let attempt = own_attempt(&mut tx, &user, attempt_id, true).await?;
+    let attempt = own_attempt(&mut tx, &user, attempt_id, ReadMode::ForUpdate).await?;
     ensure_accepting(&attempt, now)?;
     let test = model::load_test(&mut *tx, attempt.test_id).await?;
-    let current = usize::try_from(attempt.current_index).unwrap_or(0);
-    let navigation = if test.free_navigation { Navigation::Free } else { Navigation::Sequential };
-    let answered = current_answered(&mut tx, &attempt, current).await?;
-    if input.to_index >= attempt.layout.0.len() || !(Cursor { navigation, current_index: current }).can_move_to(input.to_index, answered) {
-        return Err(AppError::Conflict("Сначала ответьте на текущий вопрос".to_owned()));
-    }
-    finalize_if_sequential(&mut tx, &attempt, (navigation, current)).await?;
-    let target = i32::try_from(input.to_index).unwrap_or(i32::MAX);
-    let _moved = sqlx::query("UPDATE attempts SET current_index = $2 WHERE id = $1").bind(attempt_id).bind(target).execute(&mut *tx).await?;
-    log_event(&mut tx, attempt_id, ("navigate", None), (serde_json::json!({ "from": current, "to": input.to_index }), now)).await?;
+    let cursor = attempt.cursor(&test);
+    ensure_can_move(&mut tx, &attempt, cursor, input.to_index).await?;
+    finalize_if_sequential(&mut tx, &attempt, cursor).await?;
+    move_to(&mut tx, attempt_id, input.to_index).await?;
+    let details = serde_json::json!({ "from": cursor.current_index, "to": input.to_index });
+    log_event(&mut tx, attempt_id, ("navigate", None), (details, now)).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn current_answered(tx: &mut PgConnection, attempt: &AttemptRow, current: usize) -> ApiResult<CurrentAnswer> {
+/// Конфликт, если перейти к `to_index` нельзя: нет такого вопроса или последовательный режим
+/// не пускает.
+///
+/// cancel-safe: yes — только чтение.
+async fn ensure_can_move(
+    tx: &mut PgConnection,
+    attempt: &AttemptRow,
+    cursor: Cursor,
+    to_index: usize,
+) -> ApiResult<()> {
+    let answered = current_answered(tx, attempt, cursor.current_index).await?;
+    if to_index >= attempt.layout.0.len() || !cursor.can_move_to(to_index, answered) {
+        return Err(AppError::Conflict("Сначала ответьте на текущий вопрос".to_owned()));
+    }
+    Ok(())
+}
+
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn move_to(tx: &mut PgConnection, attempt_id: Uuid, to_index: usize) -> ApiResult<()> {
+    let target = i32::try_from(to_index).unwrap_or(i32::MAX);
+    let _moved = sqlx::query("UPDATE attempts SET current_index = $2 WHERE id = $1")
+        .bind(attempt_id)
+        .bind(target)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+async fn current_answered(
+    tx: &mut PgConnection,
+    attempt: &AttemptRow,
+    current: usize,
+) -> ApiResult<CurrentAnswer> {
     let Some(slot) = attempt.layout.0.get(current) else { return Ok(CurrentAnswer::Missing) };
     let present: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM answers WHERE attempt_id = $1 AND question_id = $2
@@ -347,21 +476,34 @@ async fn current_answered(tx: &mut PgConnection, attempt: &AttemptRow, current: 
     Ok(if present { CurrentAnswer::Present } else { CurrentAnswer::Missing })
 }
 
-async fn finalize_if_sequential(tx: &mut PgConnection, attempt: &AttemptRow, (navigation, current): (Navigation, usize)) -> ApiResult<()> {
-    let Some(slot) = attempt.layout.0.get(current).filter(|_| navigation == Navigation::Sequential) else { return Ok(()) };
-    let _final = sqlx::query("UPDATE answers SET finalized = true WHERE attempt_id = $1 AND question_id = $2")
-        .bind(attempt.id)
-        .bind(slot.question_id)
-        .execute(&mut *tx)
-        .await?;
+async fn finalize_if_sequential(
+    tx: &mut PgConnection,
+    attempt: &AttemptRow,
+    cursor: Cursor,
+) -> ApiResult<()> {
+    let Some(slot) = attempt
+        .layout
+        .0
+        .get(cursor.current_index)
+        .filter(|_| cursor.navigation == Navigation::Sequential)
+    else {
+        return Ok(());
+    };
+    let _final = sqlx::query(
+        "UPDATE answers SET finalized = true WHERE attempt_id = $1 AND question_id = $2",
+    )
+    .bind(attempt.id)
+    .bind(slot.question_id)
+    .execute(&mut *tx)
+    .await?;
     Ok(())
 }
 
 /// Итог сдачи.
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct Submitted {
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub submitted_at: Option<OffsetDateTime>,
+    #[serde(rename = "submitted_at", with = "time::serde::rfc3339::option")]
+    pub at: Option<OffsetDateTime>,
     pub submit_reason: Option<String>,
 }
 
@@ -375,12 +517,22 @@ pub(crate) async fn submit(
 ) -> ApiResult<Json<Submitted>> {
     let now = state.clock.now();
     let mut tx = state.db.begin().await?;
-    let attempt = own_attempt(&mut tx, &user, attempt_id, true).await?;
-    let reason = if attempt.deadline_at.is_some_and(|deadline| now > deadline) { SubmitReason::Timeout } else { SubmitReason::Manual };
-    let _changed = lifecycle::submit(&mut tx, attempt_id, reason, attempt.deadline_at.filter(|_| reason == SubmitReason::Timeout).unwrap_or(now)).await?;
-    let done = own_attempt(&mut tx, &user, attempt_id, false).await?;
+    let attempt = own_attempt(&mut tx, &user, attempt_id, ReadMode::ForUpdate).await?;
+    let reason = if attempt.deadline_at.is_some_and(|deadline| now > deadline) {
+        SubmitReason::Timeout
+    } else {
+        SubmitReason::Manual
+    };
+    let _changed = lifecycle::submit(
+        &mut tx,
+        attempt_id,
+        reason,
+        attempt.deadline_at.filter(|_| reason == SubmitReason::Timeout).unwrap_or(now),
+    )
+    .await?;
+    let done = own_attempt(&mut tx, &user, attempt_id, ReadMode::Plain).await?;
     tx.commit().await?;
-    Ok(Json(Submitted { submitted_at: done.submitted_at, submit_reason: done.submit_reason }))
+    Ok(Json(Submitted { at: done.submitted_at, submit_reason: done.submit_reason }))
 }
 
 /// Событие клиента.
@@ -410,7 +562,7 @@ pub(crate) async fn client_events(
 ) -> ApiResult<StatusCode> {
     let now = state.clock.now();
     let mut tx = state.db.begin().await?;
-    let _attempt = own_attempt(&mut tx, &user, attempt_id, false).await?;
+    let _attempt = own_attempt(&mut tx, &user, attempt_id, ReadMode::Plain).await?;
     for event in batch.events.iter().take(50) {
         let kind = match event {
             ClientEventKind::TabHidden => "tab_hidden",

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use domain::layout::PlacedQuestion;
 use domain::scoring;
 use rust_decimal::Decimal;
+use sqlx::types::Json;
 use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -33,7 +34,7 @@ impl SubmitReason {
 #[derive(FromRow)]
 struct AttemptHead {
     test_id: Uuid,
-    layout: sqlx::types::Json<Vec<PlacedQuestion>>,
+    layout: Json<Vec<PlacedQuestion>>,
     submitted: bool,
 }
 
@@ -52,28 +53,45 @@ pub(crate) async fn submit(
     reason: SubmitReason,
     now: OffsetDateTime,
 ) -> ApiResult<bool> {
-    let head: AttemptHead = sqlx::query_as(
-        "SELECT test_id, layout, submitted_at IS NOT NULL AS submitted FROM attempts WHERE id = $1 FOR UPDATE",
-    )
-    .bind(attempt_id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let head = lock_head(tx, attempt_id).await?;
     if head.submitted {
         return Ok(false);
     }
     let questions = questions_by_id(tx, head.test_id).await?;
-    let answers: Vec<SavedAnswer> = sqlx::query_as("SELECT question_id, selected_option_ids FROM answers WHERE attempt_id = $1")
-        .bind(attempt_id)
-        .fetch_all(&mut *tx)
-        .await?;
-    let placed: Vec<&QuestionDetail> = head.layout.0.iter().filter_map(|slot| questions.get(&slot.question_id)).collect();
+    let answers = saved_answers(tx, attempt_id).await?;
+    let placed: Vec<&QuestionDetail> =
+        head.layout.0.iter().filter_map(|slot| questions.get(&slot.question_id)).collect();
     let scores = score_answers(tx, attempt_id, &placed, &answers).await?;
-    let max = scoring::max_score(&placed.iter().map(|question| question.scored()).collect::<Vec<_>>());
+    let max =
+        scoring::max_score(&placed.iter().map(|question| question.scored()).collect::<Vec<_>>());
     finish(tx, attempt_id, (scoring::attempt_score(&scores), max), (reason, now)).await?;
     Ok(true)
 }
 
-async fn questions_by_id(tx: &mut PgConnection, test_id: Uuid) -> ApiResult<HashMap<Uuid, QuestionDetail>> {
+/// Заголовок попытки с блокировкой строки до конца транзакции.
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn lock_head(tx: &mut PgConnection, attempt_id: Uuid) -> ApiResult<AttemptHead> {
+    Ok(sqlx::query_as(
+        "SELECT test_id, layout, submitted_at IS NOT NULL AS submitted FROM attempts WHERE id = $1 FOR UPDATE",
+    )
+    .bind(attempt_id)
+    .fetch_one(&mut *tx)
+    .await?)
+}
+
+/// cancel-safe: yes — только чтение.
+async fn saved_answers(tx: &mut PgConnection, attempt_id: Uuid) -> ApiResult<Vec<SavedAnswer>> {
+    Ok(sqlx::query_as("SELECT question_id, selected_option_ids FROM answers WHERE attempt_id = $1")
+        .bind(attempt_id)
+        .fetch_all(&mut *tx)
+        .await?)
+}
+
+async fn questions_by_id(
+    tx: &mut PgConnection,
+    test_id: Uuid,
+) -> ApiResult<HashMap<Uuid, QuestionDetail>> {
     let questions = model::load_questions_in(tx, test_id).await?;
     Ok(questions.into_iter().map(|question| (question.id, question)).collect())
 }
@@ -86,19 +104,39 @@ async fn score_answers(
 ) -> ApiResult<Vec<Decimal>> {
     let mut scores = Vec::new();
     for question in placed {
-        let selected = answers.iter().find(|answer| answer.question_id == question.id).map(|answer| answer.selected_option_ids.as_slice());
-        let score = question.kind.is_scored().then(|| question.scored().score(selected.unwrap_or_default()));
+        let score = score_of(question, answers);
         if let Some(points) = score {
             scores.push(points);
         }
-        let _scored = sqlx::query("UPDATE answers SET score = $3 WHERE attempt_id = $1 AND question_id = $2")
+        store_score(tx, attempt_id, question.id, score).await?;
+    }
+    Ok(scores)
+}
+
+/// Балл за вопрос по сохранённому ответу; `None` — вопрос не оценивается.
+fn score_of(question: &QuestionDetail, answers: &[SavedAnswer]) -> Option<Decimal> {
+    let selected = answers
+        .iter()
+        .find(|answer| answer.question_id == question.id)
+        .map(|answer| answer.selected_option_ids.as_slice());
+    question.kind.is_scored().then(|| question.scored().score(selected.unwrap_or_default()))
+}
+
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn store_score(
+    tx: &mut PgConnection,
+    attempt_id: Uuid,
+    question_id: Uuid,
+    score: Option<Decimal>,
+) -> ApiResult<()> {
+    let _scored =
+        sqlx::query("UPDATE answers SET score = $3 WHERE attempt_id = $1 AND question_id = $2")
             .bind(attempt_id)
-            .bind(question.id)
+            .bind(question_id)
             .bind(score)
             .execute(&mut *tx)
             .await?;
-    }
-    Ok(scores)
+    Ok(())
 }
 
 async fn finish(
@@ -119,13 +157,16 @@ async fn finish(
     log_event(tx, attempt_id, ("submit", None), (details, now)).await
 }
 
+/// Вид события и вопрос, к которому оно относится.
+pub(crate) type EventSubject = (&'static str, Option<Uuid>);
+
 /// Пишет событие в журнал попытки.
 ///
 /// cancel-safe: yes — в транзакции вызывающего.
 pub(crate) async fn log_event(
     tx: &mut PgConnection,
     attempt_id: Uuid,
-    (kind, question_id): (&str, Option<Uuid>),
+    (kind, question_id): EventSubject,
     (details, now): (serde_json::Value, OffsetDateTime),
 ) -> ApiResult<()> {
     let _logged = sqlx::query("INSERT INTO attempt_events (attempt_id, kind, question_id, details, at) VALUES ($1, $2, $3, $4, $5)")
@@ -142,7 +183,11 @@ pub(crate) async fn log_event(
 /// Сдаёт незавершённые попытки без лимита времени при закрытии окна потока.
 ///
 /// cancel-safe: yes — в транзакции вызывающего.
-pub(crate) async fn close_untimed(tx: &mut PgConnection, (test_id, stream_id): (Uuid, Uuid), now: OffsetDateTime) -> ApiResult<()> {
+pub(crate) async fn close_untimed(
+    tx: &mut PgConnection,
+    (test_id, stream_id): (Uuid, Uuid),
+    now: OffsetDateTime,
+) -> ApiResult<()> {
     let open: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM attempts WHERE test_id = $1 AND stream_id = $2 AND submitted_at IS NULL AND deadline_at IS NULL",
     )

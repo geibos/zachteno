@@ -1,3 +1,5 @@
+use std::io::Cursor;
+
 use axum::http::StatusCode;
 use serde_json::{Value as Json, json};
 use sqlx::PgPool;
@@ -19,13 +21,17 @@ async fn course(client: &mut Client) -> String {
 }
 
 async fn test_in(client: &mut Client, course_id: &str) -> String {
-    let (status, created) = client.post(&format!("/api/courses/{course_id}/tests"), json!({ "title": "Экзамен" })).await;
+    let (status, created) = client
+        .post(&format!("/api/courses/{course_id}/tests"), json!({ "title": "Экзамен" }))
+        .await;
     assert_eq!(status, StatusCode::CREATED, "тест: {created}");
     created["id"].as_str().unwrap().to_owned()
 }
 
 fn single(correct: usize) -> Json {
-    let options: Vec<Json> = (0..3).map(|index| json!({ "body": format!("вариант {index}"), "is_correct": index == correct })).collect();
+    let options: Vec<Json> = (0..3)
+        .map(|index| json!({ "body": format!("вариант {index}"), "is_correct": index == correct }))
+        .collect();
     json!({ "kind": "single", "body": "Вопрос", "options": options })
 }
 
@@ -38,7 +44,11 @@ async fn methodist_creates_course_and_owns_it(db: PgPool) {
     assert_eq!(detail["owner_id"], owner_id.to_string(), "создатель — владелец");
     assert_eq!(detail["can_edit"], true, "может править");
     let (mut student, _) = testing::register(&state, "s@example.com").await;
-    assert_eq!(student.post("/api/courses", json!({ "title": "x" })).await.0, StatusCode::FORBIDDEN, "студент не создаёт курсы");
+    assert_eq!(
+        student.post("/api/courses", json!({ "title": "x" })).await.0,
+        StatusCode::FORBIDDEN,
+        "студент не создаёт курсы"
+    );
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -48,11 +58,23 @@ async fn other_methodist_views_but_cannot_edit(db: PgPool) {
     let course_id = course(&mut owner).await;
     let test_id = test_in(&mut owner, &course_id).await;
     let (mut other, _) = methodist(&state, "other@example.com").await;
-    assert_eq!(other.get(&format!("/api/tests/{test_id}")).await.0, StatusCode::OK, "просмотр чужого курса");
+    assert_eq!(
+        other.get(&format!("/api/tests/{test_id}")).await.0,
+        StatusCode::OK,
+        "просмотр чужого курса"
+    );
     let patch = json!({ "title": "чужое" });
-    assert_eq!(other.patch(&format!("/api/tests/{test_id}"), patch).await.0, StatusCode::FORBIDDEN, "правка запрещена");
+    assert_eq!(
+        other.patch(&format!("/api/tests/{test_id}"), patch).await.0,
+        StatusCode::FORBIDDEN,
+        "правка запрещена"
+    );
     let teacher = json!({ "email": "other@example.com" });
-    assert_eq!(other.post(&format!("/api/courses/{course_id}/teachers"), teacher).await.0, StatusCode::FORBIDDEN, "назначать нельзя");
+    assert_eq!(
+        other.post(&format!("/api/courses/{course_id}/teachers"), teacher).await.0,
+        StatusCode::FORBIDDEN,
+        "назначать нельзя"
+    );
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -63,11 +85,19 @@ async fn owner_assigns_teacher_who_sees_but_cannot_edit(db: PgPool) {
     let test_id = test_in(&mut owner, &course_id).await;
     let (mut teacher, _) = testing::register(&state, "t@example.com").await;
     let assign = json!({ "email": "t@example.com" });
-    assert_eq!(owner.post(&format!("/api/courses/{course_id}/teachers"), assign).await.0, StatusCode::NO_CONTENT, "назначен");
+    assert_eq!(
+        owner.post(&format!("/api/courses/{course_id}/teachers"), assign).await.0,
+        StatusCode::NO_CONTENT,
+        "назначен"
+    );
     let (_, list) = teacher.get("/api/courses").await;
     assert_eq!(list.as_array().map(Vec::len), Some(1), "курс в списке преподавателя");
     assert_eq!(teacher.get(&format!("/api/tests/{test_id}")).await.0, StatusCode::OK, "видит тест");
-    assert_eq!(teacher.post(&format!("/api/tests/{test_id}/questions"), single(0)).await.0, StatusCode::FORBIDDEN, "не правит");
+    assert_eq!(
+        teacher.post(&format!("/api/tests/{test_id}/questions"), single(0)).await.0,
+        StatusCode::FORBIDDEN,
+        "не правит"
+    );
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -94,8 +124,16 @@ async fn defaults_for_weight_and_any_mode_penalty(db: PgPool) {
     let test_id = test_in(&mut owner, &course_id).await;
     let any = json!({ "kind": "multiple_any", "body": "?", "weight": "2", "options": [
         { "body": "да", "is_correct": true }, { "body": "нет", "is_correct": false }] });
-    assert_eq!(owner.post(&format!("/api/tests/{test_id}/questions"), any).await.0, StatusCode::CREATED, "вопрос");
-    assert_eq!(owner.post(&format!("/api/tests/{test_id}/questions"), single(1)).await.0, StatusCode::CREATED, "вопрос");
+    assert_eq!(
+        owner.post(&format!("/api/tests/{test_id}/questions"), any).await.0,
+        StatusCode::CREATED,
+        "вопрос"
+    );
+    assert_eq!(
+        owner.post(&format!("/api/tests/{test_id}/questions"), single(1)).await.0,
+        StatusCode::CREATED,
+        "вопрос"
+    );
     let (_, test) = owner.get(&format!("/api/tests/{test_id}")).await;
     assert_eq!(test["questions"][0]["options"][1]["penalty"], "-2", "штраф −W в «хотя бы один»");
     assert_eq!(test["questions"][1]["weight"], "1", "вес по умолчанию 1");
@@ -121,7 +159,11 @@ async fn locked_test_allows_only_title_and_review_changes(db: PgPool) {
     let course_id = course(&mut owner).await;
     let test_id = test_in(&mut owner, &course_id).await;
     let _added = owner.post(&format!("/api/tests/{test_id}/questions"), single(0)).await;
-    let _locked = sqlx::query("UPDATE tests SET locked_at = now() WHERE id = $1::uuid").bind(&test_id).execute(&state.db).await.unwrap();
+    let _locked = sqlx::query("UPDATE tests SET locked_at = now() WHERE id = $1::uuid")
+        .bind(&test_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
     let (_, test) = owner.get(&format!("/api/tests/{test_id}")).await;
     let question_id = test["questions"][0]["id"].as_str().unwrap();
     let (status, error) = owner.put(&format!("/api/questions/{question_id}"), single(1)).await;
@@ -130,10 +172,18 @@ async fn locked_test_allows_only_title_and_review_changes(db: PgPool) {
     let mut settings = test["settings"].clone();
     settings["review_policy"] = json!("never");
     let patch = json!({ "title": "Новое имя", "settings": settings });
-    assert_eq!(owner.patch(&format!("/api/tests/{test_id}"), patch).await.0, StatusCode::NO_CONTENT, "имя и показ можно");
+    assert_eq!(
+        owner.patch(&format!("/api/tests/{test_id}"), patch).await.0,
+        StatusCode::NO_CONTENT,
+        "имя и показ можно"
+    );
     settings["attempts_limit"] = json!(5);
     let forbidden = json!({ "settings": settings });
-    assert_eq!(owner.patch(&format!("/api/tests/{test_id}"), forbidden).await.0, StatusCode::CONFLICT, "лимит попыток нельзя");
+    assert_eq!(
+        owner.patch(&format!("/api/tests/{test_id}"), forbidden).await.0,
+        StatusCode::CONFLICT,
+        "лимит попыток нельзя"
+    );
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -143,8 +193,14 @@ async fn clone_of_locked_test_is_editable_draft(db: PgPool) {
     let course_id = course(&mut owner).await;
     let test_id = test_in(&mut owner, &course_id).await;
     let _added = owner.post(&format!("/api/tests/{test_id}/questions"), single(2)).await;
-    let _locked = sqlx::query("UPDATE tests SET locked_at = now(), status = 'published' WHERE id = $1::uuid").bind(&test_id).execute(&state.db).await.unwrap();
-    let (status, created) = owner.post(&format!("/api/tests/{test_id}/clone"), json!({ "course_id": course_id })).await;
+    let _locked =
+        sqlx::query("UPDATE tests SET locked_at = now(), status = 'published' WHERE id = $1::uuid")
+            .bind(&test_id)
+            .execute(&state.db)
+            .await
+            .unwrap();
+    let (status, created) =
+        owner.post(&format!("/api/tests/{test_id}/clone"), json!({ "course_id": course_id })).await;
     assert_eq!(status, StatusCode::CREATED, "клон: {created}");
     let (_, copy) = owner.get(&format!("/api/tests/{}", created["id"].as_str().unwrap())).await;
     assert_eq!(copy["status"], "draft", "черновик");
@@ -155,18 +211,21 @@ async fn clone_of_locked_test_is_editable_draft(db: PgPool) {
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
 async fn image_upload_and_access_checks(db: PgPool) {
     let state = testing::state(db);
-    let (mut owner, _) = methodist(&state, "m@example.com").await;
+    let (owner, _) = methodist(&state, "m@example.com").await;
     let png = {
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgb8(image::RgbImage::new(3, 2)).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(3, 2))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
         bytes.into_inner()
     };
-    let (status, uploaded) = owner.multipart("/api/attachments", "file", "sign.png", png).await;
+    let (status, uploaded) = owner.multipart("/api/attachments", ("file", "sign.png"), png).await;
     assert_eq!(status, StatusCode::CREATED, "загрузка: {uploaded}");
     let url = uploaded["url"].as_str().unwrap().to_owned();
     assert_eq!(owner.get_raw(&url).await, StatusCode::OK, "автор видит");
-    let (mut stranger, _) = testing::register(&state, "x@example.com").await;
+    let (stranger, _) = testing::register(&state, "x@example.com").await;
     assert_eq!(stranger.get_raw(&url).await, StatusCode::NOT_FOUND, "посторонний — как будто нет");
-    let (status, _) = owner.multipart("/api/attachments", "file", "doc.pdf", b"%PDF-1.7".to_vec()).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "не картинка");
+    let (rejected, _) =
+        owner.multipart("/api/attachments", ("file", "doc.pdf"), b"%PDF-1.7".to_vec()).await;
+    assert_eq!(rejected, StatusCode::BAD_REQUEST, "не картинка");
 }

@@ -19,7 +19,12 @@ use crate::state::AppState;
 
 /// Маршруты входа, регистрации и профиля.
 pub(crate) fn routes() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new()
+    profile_routes(account_routes(OpenApiRouter::new()))
+}
+
+/// Регистрация, вход, подтверждение email и восстановление пароля.
+fn account_routes(router: OpenApiRouter<AppState>) -> OpenApiRouter<AppState> {
+    router
         .routes(routes!(register::register))
         .routes(routes!(login::login))
         .routes(routes!(login::logout))
@@ -28,6 +33,11 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(recovery::resend_verification))
         .routes(routes!(recovery::forgot_password))
         .routes(routes!(recovery::reset_password))
+}
+
+/// Профиль, сессии и внешние входы.
+fn profile_routes(router: OpenApiRouter<AppState>) -> OpenApiRouter<AppState> {
+    router
         .routes(routes!(profile::change_password))
         .routes(routes!(profile::list_sessions))
         .routes(routes!(profile::revoke_session))

@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
+use domain::review::Policy;
 use domain::scoring::{FinalScorePolicy, QuestionKind, ScoredOption, ScoredQuestion};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgExecutor};
+use sqlx::{FromRow, PgConnection, PgExecutor, PgPool};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -66,11 +67,11 @@ impl ReviewMode {
     }
 
     /// Политика домена с датой «не раньше».
-    pub(crate) const fn policy(self, not_before: Option<OffsetDateTime>) -> domain::review::Policy {
+    pub(crate) const fn policy(self, not_before: Option<OffsetDateTime>) -> Policy {
         match self {
-            Self::Never => domain::review::Policy::Never,
-            Self::AfterSubmit => domain::review::Policy::AfterSubmit,
-            Self::AfterClose => domain::review::Policy::AfterClose { not_before },
+            Self::Never => Policy::Never,
+            Self::AfterSubmit => Policy::AfterSubmit,
+            Self::AfterClose => Policy::AfterClose { not_before },
         }
     }
 }
@@ -124,7 +125,10 @@ impl TestSettings {
     /// Проверка диапазонов.
     pub(crate) fn validate(&self) -> ApiResult<()> {
         let positive = |field: Option<i32>| field.is_none_or(|count| count >= 1);
-        if positive(self.attempts_limit) && positive(self.time_limit_minutes) && positive(self.questions_per_attempt) {
+        if positive(self.attempts_limit)
+            && positive(self.time_limit_minutes)
+            && positive(self.questions_per_attempt)
+        {
             Ok(())
         } else {
             Err(AppError::BadRequest("Лимиты должны быть не меньше 1".to_owned()))
@@ -140,7 +144,6 @@ pub(crate) struct TestRow {
     pub title: String,
     pub description: String,
     pub status: String,
-    pub position: i32,
     pub attempts_limit: Option<i32>,
     pub time_limit_minutes: Option<i32>,
     pub questions_per_attempt: Option<i32>,
@@ -154,7 +157,7 @@ pub(crate) struct TestRow {
 }
 
 /// Колонки `TestRow` для SELECT.
-pub(crate) const TEST_COLUMNS: &str = "id, course_id, title, description, status, position, attempts_limit,
+pub(crate) const TEST_COLUMNS: &str = "id, course_id, title, description, status, attempts_limit,
     time_limit_minutes, questions_per_attempt, free_navigation, shuffle_questions, shuffle_options,
     review_policy, review_not_before, final_policy, locked_at";
 
@@ -169,7 +172,8 @@ impl TestRow {
             shuffle_options: self.shuffle_options,
             review_policy: ReviewMode::parse(&self.review_policy),
             review_not_before: self.review_not_before,
-            final_policy: FinalScorePolicy::parse(&self.final_policy).unwrap_or(FinalScorePolicy::Best),
+            final_policy: FinalScorePolicy::parse(&self.final_policy)
+                .unwrap_or(FinalScorePolicy::Best),
         }
     }
 
@@ -181,9 +185,16 @@ impl TestRow {
 /// Загружает тест.
 ///
 /// cancel-safe: yes — только чтение.
-pub(crate) async fn load_test<'conn>(executor: impl PgExecutor<'conn>, test_id: Uuid) -> ApiResult<TestRow> {
+pub(crate) async fn load_test<'conn>(
+    executor: impl PgExecutor<'conn>,
+    test_id: Uuid,
+) -> ApiResult<TestRow> {
     let query = format!("SELECT {TEST_COLUMNS} FROM tests WHERE id = $1");
-    sqlx::query_as(sqlx::AssertSqlSafe(query)).bind(test_id).fetch_optional(executor).await?.ok_or(AppError::NotFound)
+    sqlx::query_as(sqlx::AssertSqlSafe(query))
+        .bind(test_id)
+        .fetch_optional(executor)
+        .await?
+        .ok_or(AppError::NotFound)
 }
 
 /// Картинка, прикреплённая к вопросу или варианту.
@@ -195,8 +206,8 @@ pub(crate) struct ImageRef {
 }
 
 impl ImageRef {
-    pub(crate) fn from_parts(image_id: Option<Uuid>, alt: &str) -> Option<Self> {
-        image_id.map(|id| Self { id, url: format!("/api/files/{id}"), alt: alt.to_owned() })
+    pub(crate) fn new(id: Uuid, alt: &str) -> Self {
+        Self { id, url: format!("/api/files/{id}"), alt: alt.to_owned() }
     }
 }
 
@@ -237,7 +248,11 @@ impl QuestionDetail {
             options: self
                 .options
                 .iter()
-                .map(|option| ScoredOption { option_id: option.id, is_correct: option.is_correct, penalty: option.penalty })
+                .map(|option| ScoredOption {
+                    option_id: option.id,
+                    is_correct: option.is_correct,
+                    penalty: option.penalty,
+                })
                 .collect(),
         }
     }
@@ -270,7 +285,7 @@ struct OptionRow {
 /// Все вопросы теста с вариантами в порядке редактора.
 ///
 /// cancel-safe: yes — только чтение.
-pub(crate) async fn load_questions(db: &sqlx::PgPool, test_id: Uuid) -> ApiResult<Vec<QuestionDetail>> {
+pub(crate) async fn load_questions(db: &PgPool, test_id: Uuid) -> ApiResult<Vec<QuestionDetail>> {
     let mut connection = db.acquire().await?;
     load_questions_in(&mut connection, test_id).await
 }
@@ -278,7 +293,10 @@ pub(crate) async fn load_questions(db: &sqlx::PgPool, test_id: Uuid) -> ApiResul
 /// То же в рамках открытого соединения или транзакции.
 ///
 /// cancel-safe: yes — только чтение.
-pub(crate) async fn load_questions_in(db: &mut sqlx::PgConnection, test_id: Uuid) -> ApiResult<Vec<QuestionDetail>> {
+pub(crate) async fn load_questions_in(
+    db: &mut PgConnection,
+    test_id: Uuid,
+) -> ApiResult<Vec<QuestionDetail>> {
     let questions: Vec<QuestionRow> = sqlx::query_as(
         "SELECT id, position, kind, body, weight, image_id, image_alt FROM questions WHERE test_id = $1 ORDER BY position, id",
     )
@@ -295,29 +313,37 @@ pub(crate) async fn load_questions_in(db: &mut sqlx::PgConnection, test_id: Uuid
     Ok(assemble(questions, options))
 }
 
+/// Варианты по id вопроса.
+type OptionsByQuestion = HashMap<Uuid, Vec<OptionDetail>>;
+
 fn assemble(questions: Vec<QuestionRow>, options: Vec<OptionRow>) -> Vec<QuestionDetail> {
-    let mut grouped: HashMap<Uuid, Vec<OptionDetail>> = HashMap::new();
+    let mut grouped = group_options(options);
+    questions
+        .into_iter()
+        .map(|question| QuestionDetail {
+            id: question.id,
+            position: question.position,
+            kind: QuestionKind::parse(&question.kind).unwrap_or(QuestionKind::FreeText),
+            body: question.body,
+            weight: question.weight.normalize(),
+            image: question.image_id.map(|id| ImageRef::new(id, &question.image_alt)),
+            options: grouped.remove(&question.id).unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn group_options(options: Vec<OptionRow>) -> OptionsByQuestion {
+    let mut grouped = OptionsByQuestion::new();
     for option in options {
         grouped.entry(option.question_id).or_default().push(OptionDetail {
             id: option.id,
-            image: ImageRef::from_parts(option.image_id, &option.image_alt),
             body: option.body,
+            image: option.image_id.map(|id| ImageRef::new(id, &option.image_alt)),
             is_correct: option.is_correct,
             penalty: option.penalty.normalize(),
             penalty_custom: option.penalty_custom,
             pinned: option.pinned,
         });
     }
-    questions
-        .into_iter()
-        .map(|question| QuestionDetail {
-            options: grouped.remove(&question.id).unwrap_or_default(),
-            kind: QuestionKind::parse(&question.kind).unwrap_or(QuestionKind::FreeText),
-            image: ImageRef::from_parts(question.image_id, &question.image_alt),
-            id: question.id,
-            position: question.position,
-            body: question.body,
-            weight: question.weight.normalize(),
-        })
-        .collect()
+    grouped
 }

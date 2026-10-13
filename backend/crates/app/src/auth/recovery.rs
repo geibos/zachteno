@@ -7,7 +7,7 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::audit::AuditEntry;
-use crate::auth::account;
+use crate::auth::account::{self, LoginRow};
 use crate::auth::onetime::{self, Purpose};
 use crate::auth::password;
 use crate::auth::register::send_verification;
@@ -36,11 +36,13 @@ pub(crate) async fn verify_email(
     let mut tx = state.db.begin().await?;
     let now = state.clock.now();
     let user_id = onetime::consume(&mut tx, &[Purpose::VerifyEmail], &request.token, now).await?;
-    let _verified = sqlx::query("UPDATE users SET email_verified_at = $2 WHERE id = $1 AND email_verified_at IS NULL")
-        .bind(user_id)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
+    let _verified = sqlx::query(
+        "UPDATE users SET email_verified_at = $2 WHERE id = $1 AND email_verified_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -53,8 +55,10 @@ pub(crate) async fn resend_verification(
     user: CurrentUser,
 ) -> ApiResult<StatusCode> {
     throttle(&state.limits.mail, ip)?;
-    let since = state.clock.now() - MAIL_COOLDOWN;
-    if user.email_verified || onetime::issued_recently(&state.db, Purpose::VerifyEmail, user.id, since).await? {
+    let since = state.clock.now().saturating_sub(MAIL_COOLDOWN);
+    if user.email_verified
+        || onetime::issued_recently(&state.db, Purpose::VerifyEmail, user.id, since).await?
+    {
         return Ok(StatusCode::ACCEPTED);
     }
     let mut tx = state.db.begin().await?;
@@ -85,17 +89,29 @@ pub(crate) async fn forgot_password(
     let Some(row) = account::find_for_login(&state.db, &email).await? else {
         return Ok(StatusCode::ACCEPTED);
     };
-    let since = state.clock.now() - MAIL_COOLDOWN;
+    let since = state.clock.now().saturating_sub(MAIL_COOLDOWN);
     if onetime::issued_recently(&state.db, Purpose::ResetPassword, row.id, since).await? {
         return Ok(StatusCode::ACCEPTED);
     }
-    let mut tx = state.db.begin().await?;
-    let token = onetime::issue(&mut *tx, Purpose::ResetPassword, row.id, state.clock.now()).await?;
-    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1").bind(row.id).fetch_one(&mut *tx).await?;
-    mail::queue(&mut *tx, &Email::ResetPassword { to: email, name: row.display_name, token }).await?;
-    tx.commit().await?;
+    send_reset(&state, row).await?;
     state.jobs_wake.notify_one();
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Выпускает токен восстановления и ставит письмо в очередь.
+///
+/// cancel-safe: yes — всё в одной транзакции.
+async fn send_reset(state: &AppState, row: LoginRow) -> ApiResult<()> {
+    let mut tx = state.db.begin().await?;
+    let token = onetime::issue(&mut *tx, Purpose::ResetPassword, row.id, state.clock.now()).await?;
+    let address: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(row.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let letter = Email::ResetPassword { to: address, name: row.display_name, token };
+    mail::queue(&mut *tx, &letter).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Новый пароль по ссылке.
@@ -114,7 +130,8 @@ pub(crate) async fn reset_password(
     Json(request): Json<ResetRequest>,
 ) -> ApiResult<StatusCode> {
     throttle(&state.limits.login, ip)?;
-    password::check_strength(&request.password).map_err(|weak| AppError::BadRequest(weak.to_string()))?;
+    password::check_strength(&request.password)
+        .map_err(|weak| AppError::BadRequest(weak.to_string()))?;
     let purposes = [Purpose::ResetPassword, Purpose::SetPassword];
     onetime::ensure_usable(&state.db, &purposes, &request.token, state.clock.now()).await?;
     let hash = state.hasher.hash(request.password).await?;
@@ -122,7 +139,11 @@ pub(crate) async fn reset_password(
     let user_id = onetime::consume(&mut tx, &purposes, &request.token, state.clock.now()).await?;
     account::set_password(&mut *tx, user_id, &hash).await?;
     session::revoke_all_except(&mut *tx, user_id, None).await?;
-    AuditEntry::new("auth.password_reset", "user").by(Some(user_id), Some(ip)).on(user_id).record(&mut *tx).await?;
+    AuditEntry::new("auth.password_reset", "user")
+        .by(Some(user_id), Some(ip))
+        .on(user_id)
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

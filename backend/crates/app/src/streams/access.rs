@@ -37,7 +37,10 @@ pub(crate) async fn require_manager<'conn>(
 /// Может ли пользователь создавать потоки: методист, суперпользователь или преподаватель какого-либо курса.
 ///
 /// cancel-safe: yes — только чтение.
-pub(crate) async fn can_create<'conn>(executor: impl PgExecutor<'conn>, user: &CurrentUser) -> ApiResult<bool> {
+pub(crate) async fn can_create<'conn>(
+    executor: impl PgExecutor<'conn>,
+    user: &CurrentUser,
+) -> ApiResult<bool> {
     if user.roles.methodist || user.roles.superuser {
         return Ok(true);
     }

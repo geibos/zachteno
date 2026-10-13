@@ -7,6 +7,7 @@ use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher as _, PasswordVerifier as _};
 use argon2::{Algorithm, Argon2, Params, Version};
 use tokio::sync::Semaphore;
+use tokio::task::spawn_blocking;
 
 use crate::config::PepperMap;
 use crate::secret::Secret;
@@ -14,7 +15,7 @@ use crate::secret::Secret;
 #[cfg(test)]
 mod tests;
 
-/// Память Argon2 в КиБ (64 МиБ), итерации и параллелизм.
+/// Память Argon2 в кибибайтах (64 мебибайта), итерации и параллелизм.
 const MEMORY_KIB: u32 = 64 * 1024;
 const ITERATIONS: u32 = 3;
 const LANES: u32 = 1;
@@ -93,32 +94,42 @@ impl Hasher {
     pub(crate) async fn hash(&self, password: String) -> anyhow::Result<StoredHash> {
         let _permit = self.permits.acquire().await.context("семафор хешера закрыт")?;
         let peppers = Arc::clone(&self.peppers);
-        tokio::task::spawn_blocking(move || hash_blocking(peppers.expose(), &password)).await?
+        spawn_blocking(move || hash_blocking(peppers.expose(), &password)).await?
     }
 
     /// Проверяет пароль против сохранённого хеша.
     ///
     /// cancel-safe: yes — только вычисление.
-    pub(crate) async fn verify(&self, password: String, stored: StoredHash) -> anyhow::Result<Verification> {
+    pub(crate) async fn verify(
+        &self,
+        password: String,
+        stored: StoredHash,
+    ) -> anyhow::Result<Verification> {
         let _permit = self.permits.acquire().await.context("семафор хешера закрыт")?;
         let peppers = Arc::clone(&self.peppers);
-        tokio::task::spawn_blocking(move || verify_blocking(peppers.expose(), &password, &stored)).await?
+        spawn_blocking(move || verify_blocking(peppers.expose(), &password, &stored)).await?
     }
 }
 
 fn argon2(pepper: &[u8]) -> anyhow::Result<Argon2<'_>> {
-    let params = Params::new(MEMORY_KIB, ITERATIONS, LANES, None).map_err(|error| anyhow!("{error}"))?;
-    Argon2::new_with_secret(pepper, Algorithm::Argon2id, Version::V0x13, params)
+    let cost =
+        Params::new(MEMORY_KIB, ITERATIONS, LANES, None).map_err(|error| anyhow!("{error}"))?;
+    Argon2::new_with_secret(pepper, Algorithm::Argon2id, Version::V0x13, cost)
         .map_err(|error| anyhow!("{error}"))
 }
 
 fn hash_blocking(peppers: &PepperMap, password: &str) -> anyhow::Result<StoredHash> {
     let (version, pepper) = peppers.last_key_value().context("нет ни одного перца")?;
-    let hash = argon2(pepper)?.hash_password(password.as_bytes()).map_err(|error| anyhow!("{error}"))?;
+    let hash =
+        argon2(pepper)?.hash_password(password.as_bytes()).map_err(|error| anyhow!("{error}"))?;
     Ok(StoredHash { phc: hash.to_string(), pepper_version: *version })
 }
 
-fn verify_blocking(peppers: &PepperMap, password: &str, stored: &StoredHash) -> anyhow::Result<Verification> {
+fn verify_blocking(
+    peppers: &PepperMap,
+    password: &str,
+    stored: &StoredHash,
+) -> anyhow::Result<Verification> {
     let Some(pepper) = peppers.get(&stored.pepper_version) else {
         return Ok(Verification::Invalid);
     };

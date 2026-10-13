@@ -21,7 +21,9 @@ pub enum LinkLevel {
 }
 
 /// Вид совпадения, на котором основана связь.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     /// Общий маркер браузера.

@@ -9,6 +9,8 @@ use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport as _, Message, Tokio1Executor};
 use serde::{Deserialize, Serialize};
+use tokio::fs::{create_dir_all, write};
+use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use crate::config::MailConfig;
@@ -23,7 +25,8 @@ const SEND_INTERVAL: Duration = Duration::from_secs(1);
 #[serde(tag = "template", rename_all = "snake_case")]
 pub(crate) enum Email {
     /// Подтверждение адреса.
-    VerifyEmail { to: String, name: String, token: String },
+    #[serde(rename = "verify_email")]
+    VerifyAddress { to: String, name: String, token: String },
     /// Восстановление пароля.
     ResetPassword { to: String, name: String, token: String },
 }
@@ -31,14 +34,14 @@ pub(crate) enum Email {
 impl Email {
     fn recipient(&self) -> &str {
         match self {
-            Self::VerifyEmail { to, .. } | Self::ResetPassword { to, .. } => to,
+            Self::VerifyAddress { to, .. } | Self::ResetPassword { to, .. } => to,
         }
     }
 
     /// Тема и текст письма.
     pub(crate) fn render(&self, public_url: &str) -> (String, String) {
         match self {
-            Self::VerifyEmail { name, token, .. } => (
+            Self::VerifyAddress { name, token, .. } => (
                 "Подтвердите адрес почты — Зачтено".to_owned(),
                 format!(
                     "Здравствуйте, {name}!\n\nПодтвердите адрес почты по ссылке:\n{public_url}/verify-email?token={token}\n\n\
@@ -59,7 +62,10 @@ impl Email {
 /// Ставит письмо в очередь (в транзакции вызывающего).
 ///
 /// cancel-safe: yes — один INSERT.
-pub(crate) async fn queue<'conn>(executor: impl sqlx::PgExecutor<'conn>, email: &Email) -> Result<(), sqlx::Error> {
+pub(crate) async fn queue<'conn>(
+    executor: impl sqlx::PgExecutor<'conn>,
+    email: &Email,
+) -> Result<(), sqlx::Error> {
     jobs::enqueue(executor, JobKind::Email, email).await
 }
 
@@ -79,13 +85,15 @@ impl Transport {
                     .build();
                 Ok(Self::Smtp { mailer, from: from.parse().context("MAIL_FROM")? })
             }
-            MailConfig::Directory { path, from } => {
-                Ok(Self::Directory { path: PathBuf::from(path), from: from.parse().context("MAIL_FROM")? })
-            }
+            MailConfig::Directory { path, from } => Ok(Self::Directory {
+                path: PathBuf::from(path),
+                from: from.parse().context("MAIL_FROM")?,
+            }),
         }
     }
 
-    fn from_mailbox(&self) -> &Mailbox {
+    /// Адрес отправителя.
+    const fn sender(&self) -> &Mailbox {
         match self {
             Self::Smtp { from, .. } | Self::Directory { from, .. } => from,
         }
@@ -98,9 +106,9 @@ impl Transport {
                 let _response = mailer.send(message).await?;
             }
             Self::Directory { path, .. } => {
-                tokio::fs::create_dir_all(path).await?;
+                create_dir_all(path).await?;
                 let file = path.join(format!("{}.eml", Uuid::new_v4()));
-                tokio::fs::write(file, message.formatted()).await?;
+                write(file, message.formatted()).await?;
             }
         }
         Ok(())
@@ -112,45 +120,81 @@ impl Transport {
 /// cancel-safe: NO — см. `Transport::send`; запускается отдельной задачей и живёт до остановки процесса.
 pub(crate) async fn run_worker(state: AppState) -> anyhow::Result<()> {
     let transport = Transport::from_config(&state.config.mail)?;
+    work(&state, &transport).await
+}
+
+/// Бесконечный цикл воркера писем.
+///
+/// cancel-safe: NO — см. `Transport::send`.
+async fn work(state: &AppState, transport: &Transport) -> ! {
     loop {
-        match jobs::claim(&state, Some(JobKind::Email)).await {
-            Ok(Some(job)) => {
-                deliver(&state, &transport, &job).await;
-                tokio::time::sleep(SEND_INTERVAL).await;
-            }
-            Ok(None) => {
-                let _woken = tokio::time::timeout(jobs::IDLE_POLL, state.jobs_wake.notified()).await;
-            }
-            Err(error) => {
-                tracing::error!(%error, "очередь писем недоступна");
-                tokio::time::sleep(jobs::IDLE_POLL).await;
-            }
-        }
+        step(state, transport).await;
     }
 }
 
-async fn deliver(state: &AppState, transport: &Transport, job: &jobs::Claimed) {
-    let outcome = match build(state, transport, job) {
-        Ok(message) => transport.send(message).await,
-        Err(error) => Err(error),
-    };
-    let recorded = match outcome {
-        Ok(()) => jobs::complete(state, job.id).await,
-        Err(error) => {
-            tracing::warn!(job = job.id, %error, "письмо не отправлено");
-            jobs::fail(state, job, &error.to_string()).await
+/// Одна итерация: письмо и пауза, ожидание новой задачи или пауза после ошибки очереди.
+///
+/// cancel-safe: NO — см. `Transport::send`.
+async fn step(state: &AppState, transport: &Transport) {
+    match jobs::claim(state, Some(JobKind::Email)).await {
+        Ok(Some(job)) => {
+            deliver(state, transport, &job).await;
+            sleep(SEND_INTERVAL).await;
         }
+        Ok(None) => {
+            let _woken = timeout(jobs::IDLE_POLL, state.jobs_wake.notified()).await;
+        }
+        Err(error) => queue_unavailable(&error).await,
+    }
+}
+
+/// Пишет ошибку очереди и выжидает перед следующей попыткой.
+///
+/// cancel-safe: yes — только пауза.
+async fn queue_unavailable(error: &sqlx::Error) {
+    tracing::error!(%error, "очередь писем недоступна");
+    sleep(jobs::IDLE_POLL).await;
+}
+
+/// cancel-safe: NO — см. `Transport::send`.
+async fn deliver(state: &AppState, transport: &Transport, job: &jobs::Claimed) {
+    let recorded = match send_job(state, transport, job).await {
+        Ok(()) => jobs::complete(state, job.id).await,
+        Err(error) => fail_job(state, job, &error).await,
     };
     if let Err(error) = recorded {
-        tracing::error!(job = job.id, %error, "не удалось обновить задачу письма");
+        report_unrecorded(job, &error);
     }
+}
+
+/// cancel-safe: NO — см. `Transport::send`.
+async fn send_job(
+    state: &AppState,
+    transport: &Transport,
+    job: &jobs::Claimed,
+) -> anyhow::Result<()> {
+    transport.send(build(state, transport, job)?).await
+}
+
+/// cancel-safe: yes — один UPDATE.
+async fn fail_job(
+    state: &AppState,
+    job: &jobs::Claimed,
+    error: &anyhow::Error,
+) -> Result<(), sqlx::Error> {
+    tracing::warn!(job = job.id, %error, "письмо не отправлено");
+    jobs::fail(state, job, &error.to_string()).await
+}
+
+fn report_unrecorded(job: &jobs::Claimed, error: &sqlx::Error) {
+    tracing::error!(job = job.id, %error, "не удалось обновить задачу письма");
 }
 
 fn build(state: &AppState, transport: &Transport, job: &jobs::Claimed) -> anyhow::Result<Message> {
     let email: Email = job.payload()?;
     let (subject, body) = email.render(&state.config.http.public_url);
     Ok(Message::builder()
-        .from(transport.from_mailbox().clone())
+        .from(transport.sender().clone())
         .to(email.recipient().parse().context("адрес получателя")?)
         .subject(subject)
         .header(ContentType::TEXT_PLAIN)

@@ -1,12 +1,15 @@
 //! Хранилище картинок (Garage по S3 API, в тестах — память) и их обработка (design D10).
 
+use std::fmt::Display;
 use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use bytes::Bytes;
-use image::codecs::gif::{GifDecoder, GifEncoder};
-use image::{AnimationDecoder as _, ImageDecoder as _, ImageFormat, ImageReader, Limits};
+use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
+use image::{
+    AnimationDecoder as _, DynamicImage, Frame, ImageDecoder as _, ImageFormat, ImageReader, Limits,
+};
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path as StorePath;
 use object_store::{GetOptions, ObjectStore, PutOptions, PutPayload};
@@ -49,7 +52,9 @@ pub(crate) fn connect(config: &StorageConfig) -> anyhow::Result<Blobs> {
 ///
 /// cancel-safe: yes — объект либо записан целиком, либо нет; ключи случайные.
 pub(crate) async fn put(blobs: &Blobs, key: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
-    let _written = blobs.put_opts(&StorePath::from(key), PutPayload::from(bytes), PutOptions::default()).await?;
+    let _written = blobs
+        .put_opts(&StorePath::from(key), PutPayload::from(bytes), PutOptions::default())
+        .await?;
     Ok(())
 }
 
@@ -80,16 +85,30 @@ pub(crate) enum Rejected {
     Undecodable,
 }
 
+/// Формат не распознан; причина уходит в журнал.
+fn unsupported(error: impl Display) -> Rejected {
+    tracing::info!(%error, "формат загруженного файла не распознан");
+    Rejected::UnsupportedFormat
+}
+
+/// Картинку не удалось декодировать или перекодировать; причина уходит в журнал.
+fn undecodable(error: impl Display) -> Rejected {
+    tracing::info!(%error, "загруженная картинка не обработана");
+    Rejected::Undecodable
+}
+
 /// Проверяет формат декодированием и перекодирует картинку, удаляя метаданные (EXIF и т. п.).
 pub(crate) fn process(upload: &[u8]) -> Result<Processed, Rejected> {
     if upload.len() > MAX_UPLOAD_BYTES {
         return Err(Rejected::TooLarge);
     }
-    let format = image::guess_format(upload).map_err(|_| Rejected::UnsupportedFormat)?;
-    match format {
-        ImageFormat::Gif => reencode_gif(upload),
-        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => reencode_still(upload, format),
-        _ => Err(Rejected::UnsupportedFormat),
+    let format = image::guess_format(upload).map_err(unsupported)?;
+    if format == ImageFormat::Gif {
+        reencode_gif(upload)
+    } else if matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP) {
+        reencode_still(upload, format)
+    } else {
+        Err(Rejected::UnsupportedFormat)
     }
 }
 
@@ -101,39 +120,69 @@ fn limits(side: u32) -> Limits {
     limits
 }
 
+/// Во что перекодировать: JPEG и WebP остаются собой, остальное — PNG.
+fn output_of(format: ImageFormat) -> (ImageFormat, &'static str) {
+    if format == ImageFormat::Jpeg {
+        (ImageFormat::Jpeg, "image/jpeg")
+    } else if format == ImageFormat::WebP {
+        (ImageFormat::WebP, "image/webp")
+    } else {
+        (ImageFormat::Png, "image/png")
+    }
+}
+
 fn reencode_still(upload: &[u8], format: ImageFormat) -> Result<Processed, Rejected> {
     let mut reader = ImageReader::with_format(Cursor::new(upload), format);
     reader.limits(limits(MAX_SIDE));
-    let decoded = reader.decode().map_err(|_| Rejected::Undecodable)?;
-    let (output, content_type) = match format {
-        ImageFormat::Jpeg => (ImageFormat::Jpeg, "image/jpeg"),
-        ImageFormat::WebP => (ImageFormat::WebP, "image/webp"),
-        _ => (ImageFormat::Png, "image/png"),
-    };
+    let decoded = reader.decode().map_err(undecodable)?;
+    let (output, content_type) = output_of(format);
     let mut encoded = Cursor::new(Vec::new());
-    let normalized = if output == ImageFormat::Jpeg { image::DynamicImage::ImageRgb8(decoded.to_rgb8()) } else { decoded };
-    normalized.write_to(&mut encoded, output).map_err(|_| Rejected::Undecodable)?;
-    Ok(Processed { content_type, width: normalized.width(), height: normalized.height(), bytes: encoded.into_inner() })
+    let normalized = if output == ImageFormat::Jpeg {
+        DynamicImage::ImageRgb8(decoded.to_rgb8())
+    } else {
+        decoded
+    };
+    normalized.write_to(&mut encoded, output).map_err(undecodable)?;
+    Ok(Processed {
+        bytes: encoded.into_inner(),
+        content_type,
+        width: normalized.width(),
+        height: normalized.height(),
+    })
 }
 
 fn reencode_gif(upload: &[u8]) -> Result<Processed, Rejected> {
-    let mut decoder = GifDecoder::new(Cursor::new(upload)).map_err(|_| Rejected::Undecodable)?;
-    decoder.set_limits(limits(MAX_GIF_SIDE)).map_err(|_| Rejected::Undecodable)?;
+    let mut decoder = GifDecoder::new(Cursor::new(upload)).map_err(undecodable)?;
+    decoder.set_limits(limits(MAX_GIF_SIDE)).map_err(undecodable)?;
     let (width, height) = decoder.dimensions();
-    let frame_pixels = u64::from(width).saturating_mul(u64::from(height)).max(1);
-    let frame_budget = usize::try_from(MAX_GIF_PIXELS.checked_div(frame_pixels).unwrap_or(0)).unwrap_or(0).min(MAX_FRAMES);
+    let budget = frame_budget(width, height);
     let mut frames = Vec::new();
     for frame in decoder.into_frames() {
-        if frames.len() >= frame_budget {
+        if frames.len() >= budget {
             return Err(Rejected::Undecodable);
         }
-        frames.push(frame.map_err(|_| Rejected::Undecodable)?);
+        frames.push(frame.map_err(undecodable)?);
     }
+    Ok(Processed { bytes: encode_gif(frames)?, content_type: "image/gif", width, height })
+}
+
+/// Сколько кадров такого размера укладывается в бюджет пикселей и лимит кадров.
+fn frame_budget(width: u32, height: u32) -> usize {
+    let frame_pixels = u64::from(width).saturating_mul(u64::from(height)).max(1);
+    usize::try_from(MAX_GIF_PIXELS.checked_div(frame_pixels).unwrap_or(0))
+        .unwrap_or(0)
+        .min(MAX_FRAMES)
+}
+
+/// Закодированная анимация или причина отказа.
+type Encoded = Result<Vec<u8>, Rejected>;
+
+fn encode_gif(frames: Vec<Frame>) -> Encoded {
     let mut encoded = Vec::new();
     {
-        let mut encoder = GifEncoder::new(&mut encoded);
-        encoder.set_repeat(image::codecs::gif::Repeat::Infinite).map_err(|_| Rejected::Undecodable)?;
-        encoder.encode_frames(frames).map_err(|_| Rejected::Undecodable)?;
+        let mut gif = GifEncoder::new(&mut encoded);
+        gif.set_repeat(Repeat::Infinite).map_err(undecodable)?;
+        gif.encode_frames(frames).map_err(undecodable)?;
     }
-    Ok(Processed { bytes: encoded, content_type: "image/gif", width, height })
+    Ok(encoded)
 }

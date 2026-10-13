@@ -1,14 +1,16 @@
 //! Пересчёт связей пользователя по совпавшим сигналам (spec antifraud-signals, design D14).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use domain::antifraud::{EvidenceKind, LevelTable, LinkLevel};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use sqlx::types::Json;
 use time::{Duration, OffsetDateTime};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::antifraud::ingest::Typing;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -21,8 +23,6 @@ pub(crate) struct Evidence {
     pub at: Option<OffsetDateTime>,
 }
 
-/// IP с числом разных пользователей за 30 дней не больше этого — «домашняя сеть».
-const HOME_NETWORK_USERS: i64 = 3;
 /// Больше этого — сеть общего пользования.
 const PUBLIC_NETWORK_USERS: i64 = 5;
 /// Отпечаток устройства у стольких пользователей и меньше — «редкий».
@@ -37,9 +37,17 @@ struct Hit {
     extra: i64,
 }
 
-type Found = HashMap<Uuid, Vec<Evidence>>;
+/// Основания по каждому связанному пользователю; упорядочено по id, чтобы лимит связей
+/// по сети общего пользования отсекал одни и те же связи при каждом пересчёте.
+type Found = BTreeMap<Uuid, Vec<Evidence>>;
 
-fn add(found: &mut Found, hits: Vec<Hit>, describe: impl Fn(&Hit) -> Option<(EvidenceKind, String)>) {
+/// Вид и описание основания, если совпадение что-то значит.
+type Described = Option<(EvidenceKind, String)>;
+
+/// Толкование строки совпадения.
+type Describe = fn(&Hit) -> Described;
+
+fn add(found: &mut Found, hits: Vec<Hit>, describe: Describe) {
     for hit in hits {
         if let Some((kind, detail)) = describe(&hit) {
             found.entry(hit.other).or_default().push(Evidence { kind, detail, at: hit.at });
@@ -47,7 +55,12 @@ fn add(found: &mut Found, hits: Vec<Hit>, describe: impl Fn(&Hit) -> Option<(Evi
     }
 }
 
-async fn hits(state: &AppState, sql: &'static str, user_id: Uuid, since: OffsetDateTime) -> ApiResult<Vec<Hit>> {
+async fn hits(
+    state: &AppState,
+    sql: &'static str,
+    user_id: Uuid,
+    since: OffsetDateTime,
+) -> ApiResult<Vec<Hit>> {
     Ok(sqlx::query_as(sql).bind(user_id).bind(since).fetch_all(&state.db).await?)
 }
 
@@ -62,6 +75,8 @@ const SHARED_DEVICE: &str = "
     FROM signals a JOIN signals b ON b.device_hash = a.device_hash AND b.user_id <> a.user_id
     WHERE a.user_id = $1 AND a.device_hash IS NOT NULL GROUP BY b.user_id, a.device_hash";
 
+/// `max(c.users) <= 3`: IP, которым за 30 дней пользовались не больше трёх человек, —
+/// «домашняя сеть».
 const SHARED_NETWORK: &str = "
     WITH mine AS (SELECT DISTINCT ip FROM signals WHERE user_id = $1 AND ip IS NOT NULL AND NOT hosting),
          crowd AS (SELECT s.ip, count(DISTINCT s.user_id) AS users FROM signals s JOIN mine USING (ip) WHERE s.at > $2 GROUP BY s.ip)
@@ -105,32 +120,80 @@ const REGISTRATION_PATTERN: &str = "
       ON b.link_id = a.link_id AND b.user_id <> a.user_id AND abs(extract(epoch FROM b.used_at - a.used_at)) <= 600 AND b.ip = a.ip
     WHERE a.user_id = $1 AND $2 IS NOT NULL";
 
-fn describe_network(hit: &Hit) -> Option<(EvidenceKind, String)> {
-    if hit.extra < 0 && -hit.extra > PUBLIC_NETWORK_USERS {
-        return Some((EvidenceKind::SharedPublicNetwork, format!("общий IP-адрес, которым пользуются {} человек", -hit.extra)));
+fn describe_network(hit: &Hit) -> Described {
+    let users = hit.extra.saturating_neg();
+    if hit.extra < 0 && users > PUBLIC_NETWORK_USERS {
+        return Some((
+            EvidenceKind::SharedPublicNetwork,
+            format!("общий IP-адрес, которым пользуются {users} человек"),
+        ));
     }
-    (hit.extra >= 2).then(|| (EvidenceKind::HomeNetwork, format!("общая домашняя сеть, {} разных дней", hit.extra)))
+    (hit.extra >= 2).then(|| {
+        (EvidenceKind::HomeNetwork, format!("общая домашняя сеть, {} разных дней", hit.extra))
+    })
 }
+
+fn describe_mistakes(hit: &Hit) -> Described {
+    (hit.extra >= 2).then(|| {
+        (EvidenceKind::MatchingMistakes, format!("одинаковые ошибки в {} тестах", hit.extra))
+    })
+}
+
+/// Запрос совпадений и его толкование.
+type Source = (&'static str, Describe);
+
+/// Запросы совпадений в порядке выполнения.
+const SOURCES: [Source; 7] = [
+    (SHARED_MARKER, |_| {
+        Some((EvidenceKind::SharedMarker, "один и тот же браузер (маркер)".to_owned()))
+    }),
+    (SHARED_DEVICE, |hit| {
+        Some(if hit.extra <= RARE_DEVICE_USERS {
+            (
+                EvidenceKind::SharedRareDevice,
+                "одно и то же устройство (отпечаток редкий)".to_owned(),
+            )
+        } else {
+            (
+                EvidenceKind::SharedCommonDevice,
+                format!(
+                    "одинаковый отпечаток устройства — распространённый, у {} пользователей",
+                    hit.extra
+                ),
+            )
+        })
+    }),
+    (SHARED_NETWORK, describe_network),
+    (SESSION_HANDOFF, |_| {
+        Some((
+            EvidenceKind::SessionHandoff,
+            "передача сессии: вход сразу после другого аккаунта".to_owned(),
+        ))
+    }),
+    (IDENTICAL_TEXT, |hit| {
+        Some((
+            EvidenceKind::IdenticalFreeText,
+            format!("идентичные свободные ответы: {}", hit.extra),
+        ))
+    }),
+    (MATCHING_MISTAKES, describe_mistakes),
+    (REGISTRATION_PATTERN, |_| {
+        Some((
+            EvidenceKind::RegistrationPattern,
+            "регистрация по одной ссылке из одной сети с разницей до 10 минут".to_owned(),
+        ))
+    }),
+];
 
 /// Пересчитывает связи пользователя и сохраняет их (решения проверяющих не трогаются).
 ///
 /// cancel-safe: yes — каждая связь сохраняется отдельным идемпотентным UPSERT.
 pub(crate) async fn recompute(state: &AppState, user_id: Uuid) -> ApiResult<()> {
-    let since = state.clock.now() - Duration::days(30);
+    let since = state.clock.now().saturating_sub(Duration::days(30));
     let mut found = Found::new();
-    add(&mut found, hits(state, SHARED_MARKER, user_id, since).await?, |_| Some((EvidenceKind::SharedMarker, "один и тот же браузер (маркер)".to_owned())));
-    add(&mut found, hits(state, SHARED_DEVICE, user_id, since).await?, |hit| {
-        Some(if hit.extra <= RARE_DEVICE_USERS {
-            (EvidenceKind::SharedRareDevice, "одно и то же устройство (отпечаток редкий)".to_owned())
-        } else {
-            (EvidenceKind::SharedCommonDevice, format!("одинаковый отпечаток устройства — распространённый, у {} пользователей", hit.extra))
-        })
-    });
-    add(&mut found, hits(state, SHARED_NETWORK, user_id, since).await?, describe_network);
-    add(&mut found, hits(state, SESSION_HANDOFF, user_id, since).await?, |_| Some((EvidenceKind::SessionHandoff, "передача сессии: вход сразу после другого аккаунта".to_owned())));
-    add(&mut found, hits(state, IDENTICAL_TEXT, user_id, since).await?, |hit| Some((EvidenceKind::IdenticalFreeText, format!("идентичные свободные ответы: {}", hit.extra))));
-    add(&mut found, hits(state, MATCHING_MISTAKES, user_id, since).await?, |hit| (hit.extra >= 2).then(|| (EvidenceKind::MatchingMistakes, format!("одинаковые ошибки в {} тестах", hit.extra))));
-    add(&mut found, hits(state, REGISTRATION_PATTERN, user_id, since).await?, |_| Some((EvidenceKind::RegistrationPattern, "регистрация по одной ссылке из одной сети с разницей до 10 минут".to_owned())));
+    for (sql, describe) in SOURCES {
+        add(&mut found, hits(state, sql, user_id, since).await?, describe);
+    }
     add_typing(state, user_id, &mut found).await?;
     save(state, user_id, found).await
 }
@@ -138,18 +201,22 @@ pub(crate) async fn recompute(state: &AppState, user_id: Uuid) -> ApiResult<()> 
 #[derive(FromRow)]
 struct TypingRow {
     user_id: Uuid,
-    typing: sqlx::types::Json<crate::antifraud::ingest::Typing>,
+    typing: Json<Typing>,
 }
 
+/// Среднее и стандартное отклонение.
+type MeanSpread = (f64, f64);
+
 /// Признаки ритма: средние и разброс интервалов.
-fn features(typing: &crate::antifraud::ingest::Typing) -> Option<[f64; 4]> {
-    let stats = |samples: &[f32]| -> Option<(f64, f64)> {
+fn features(typing: &Typing) -> Option<[f64; 4]> {
+    let stats = |samples: &[f32]| -> Option<MeanSpread> {
         if samples.len() < 20 {
             return None;
         }
         let count = f64::from(u32::try_from(samples.len()).ok()?);
         let mean = samples.iter().map(|sample| f64::from(*sample)).sum::<f64>() / count;
-        let variance = samples.iter().map(|sample| (f64::from(*sample) - mean).powi(2)).sum::<f64>() / count;
+        let variance =
+            samples.iter().map(|sample| (f64::from(*sample) - mean).powi(2)).sum::<f64>() / count;
         Some((mean, variance.sqrt()))
     };
     let (dwell_mean, dwell_spread) = stats(&typing.dwell)?;
@@ -158,18 +225,29 @@ fn features(typing: &crate::antifraud::ingest::Typing) -> Option<[f64; 4]> {
 }
 
 fn similar(left: &[f64; 4], right: &[f64; 4]) -> bool {
-    left.iter().zip(right).all(|(one, two)| (one - two).abs() <= 0.07 * one.abs().max(two.abs()).max(1.0))
+    left.iter()
+        .zip(right)
+        .all(|(one, two)| (one - two).abs() <= 0.07 * one.abs().max(two.abs()).max(1.0))
 }
 
+/// cancel-safe: yes — только чтение.
 async fn add_typing(state: &AppState, user_id: Uuid, found: &mut Found) -> ApiResult<()> {
     let rows: Vec<TypingRow> = sqlx::query_as(
         "SELECT DISTINCT ON (user_id) user_id, typing FROM signals WHERE typing IS NOT NULL ORDER BY user_id, at DESC LIMIT 2000",
     )
     .fetch_all(&state.db)
     .await?;
-    let Some(mine) = rows.iter().find(|row| row.user_id == user_id) else { return Ok(()) };
-    let Some(my_features) = features(&mine.typing) else { return Ok(()) };
-    for row in rows.iter().filter(|row| row.user_id != user_id && row.typing.input == mine.typing.input) {
+    push_typing(found, &rows, user_id);
+    Ok(())
+}
+
+/// Добавляет основание «похожий ритм» для пользователей, чей набор похож на набор `user_id`.
+fn push_typing(found: &mut Found, rows: &[TypingRow], user_id: Uuid) {
+    let Some(mine) = rows.iter().find(|row| row.user_id == user_id) else { return };
+    let Some(my_features) = features(&mine.typing) else { return };
+    for row in
+        rows.iter().filter(|row| row.user_id != user_id && row.typing.input == mine.typing.input)
+    {
         if features(&row.typing).is_some_and(|theirs| similar(&my_features, &theirs)) {
             found.entry(row.user_id).or_default().push(Evidence {
                 kind: EvidenceKind::TypingSimilarity,
@@ -178,14 +256,13 @@ async fn add_typing(state: &AppState, user_id: Uuid, found: &mut Found) -> ApiRe
             });
         }
     }
-    Ok(())
 }
 
 async fn save(state: &AppState, user_id: Uuid, found: Found) -> ApiResult<()> {
     let table = LevelTable::default();
     let mut public_links = 0_i64;
     for (other, evidence) in found {
-        let kinds: BTreeSet<EvidenceKind> = evidence.iter().map(|item| item.kind).collect();
+        let kinds: BTreeSet<EvidenceKind> = evidence.iter().map(|piece| piece.kind).collect();
         let Some(level) = table.combine(&kinds) else { continue };
         if kinds.iter().all(|kind| *kind == EvidenceKind::SharedPublicNetwork) {
             public_links = public_links.saturating_add(1);
@@ -206,7 +283,12 @@ pub(crate) const fn level_name(level: LinkLevel) -> &'static str {
     }
 }
 
-async fn upsert(state: &AppState, (one, two): (Uuid, Uuid), level: LinkLevel, evidence: &[Evidence]) -> ApiResult<()> {
+async fn upsert(
+    state: &AppState,
+    (one, two): (Uuid, Uuid),
+    level: LinkLevel,
+    evidence: &[Evidence],
+) -> ApiResult<()> {
     let (user_a, user_b) = if one < two { (one, two) } else { (two, one) };
     let _saved = sqlx::query(
         "INSERT INTO identity_links (user_a, user_b, level, evidence, computed_at) VALUES ($1, $2, $3, $4, $5)
@@ -215,7 +297,7 @@ async fn upsert(state: &AppState, (one, two): (Uuid, Uuid), level: LinkLevel, ev
     .bind(user_a)
     .bind(user_b)
     .bind(level_name(level))
-    .bind(sqlx::types::Json(evidence))
+    .bind(Json(evidence))
     .bind(state.clock.now())
     .execute(&state.db)
     .await?;

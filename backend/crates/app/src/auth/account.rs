@@ -71,9 +71,9 @@ pub(crate) async fn create<'conn>(
     .fetch_one(executor)
     .await;
     inserted.map_err(|error| match error.as_database_error() {
-        Some(db_error) if db_error.is_unique_violation() => {
-            AppError::Conflict("Этот email уже зарегистрирован. Войдите или восстановите пароль.".to_owned())
-        }
+        Some(db_error) if db_error.is_unique_violation() => AppError::Conflict(
+            "Этот email уже зарегистрирован. Войдите или восстановите пароль.".to_owned(),
+        ),
         Some(_) | None => error.into(),
     })
 }
@@ -86,12 +86,13 @@ pub(crate) async fn set_password<'conn>(
     user_id: Uuid,
     hash: &StoredHash,
 ) -> Result<(), sqlx::Error> {
-    let _updated = sqlx::query("UPDATE users SET password_hash = $2, pepper_version = $3 WHERE id = $1")
-        .bind(user_id)
-        .bind(&hash.phc)
-        .bind(i32::try_from(hash.pepper_version).unwrap_or(i32::MAX))
-        .execute(executor)
-        .await?;
+    let _updated =
+        sqlx::query("UPDATE users SET password_hash = $2, pepper_version = $3 WHERE id = $1")
+            .bind(user_id)
+            .bind(&hash.phc)
+            .bind(i32::try_from(hash.pepper_version).unwrap_or(i32::MAX))
+            .execute(executor)
+            .await?;
     Ok(())
 }
 
@@ -103,10 +104,17 @@ pub(crate) fn normalize_email(raw: &str) -> Result<String, AppError> {
     let valid = email.len() <= 254
         && email.is_ascii()
         && email.split_once('@').is_some_and(|(local, domain)| {
-            !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.contains('@')
+            !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.contains('@')
         })
         && !email.contains(char::is_whitespace);
-    if valid { Ok(email.to_owned()) } else { Err(AppError::BadRequest("Некорректный email".to_owned())) }
+    if valid {
+        Ok(email.to_owned())
+    } else {
+        Err(AppError::BadRequest("Некорректный email".to_owned()))
+    }
 }
 
 /// Проверяет отображаемое имя: 1–200 символов после обрезки.
@@ -123,7 +131,10 @@ pub(crate) fn normalize_name(raw: &str) -> Result<String, AppError> {
 /// Занят ли email (дешёвая проверка до дорогого хеширования; гонку ловит UNIQUE).
 ///
 /// cancel-safe: yes — только чтение.
-pub(crate) async fn email_taken<'conn>(executor: impl PgExecutor<'conn>, email: &str) -> Result<bool, sqlx::Error> {
+pub(crate) async fn email_taken<'conn>(
+    executor: impl PgExecutor<'conn>,
+    email: &str,
+) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email_lower = lower($1))")
         .bind(email)
         .fetch_one(executor)

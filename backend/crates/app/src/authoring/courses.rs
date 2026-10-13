@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -33,7 +33,10 @@ pub(crate) struct CourseSummary {
 
 /// Курсы, которые пользователь ведёт или видит: методист и суперпользователь — все, преподаватель — свои.
 #[utoipa::path(get, path = "/api/courses", tag = "courses", responses((status = 200, body = [CourseSummary])))]
-pub(crate) async fn list_courses(State(state): State<AppState>, user: CurrentUser) -> ApiResult<Json<Vec<CourseSummary>>> {
+pub(crate) async fn list_courses(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> ApiResult<Json<Vec<CourseSummary>>> {
     let sees_all = user.roles.methodist || user.roles.superuser;
     let courses = sqlx::query_as(
         "SELECT c.id, c.title, c.description, o.display_name AS owner_name, c.owner_id,
@@ -64,6 +67,9 @@ pub(crate) struct Created {
     pub id: Uuid,
 }
 
+const INSERT_COURSE: &str =
+    "INSERT INTO courses (title, description, owner_id) VALUES ($1, $2, $3) RETURNING id";
+
 /// Создаёт курс; создатель становится владельцем.
 #[utoipa::path(post, path = "/api/courses", tag = "courses", request_body = NewCourse, responses((status = 201, body = Created)))]
 pub(crate) async fn create_course(
@@ -74,13 +80,18 @@ pub(crate) async fn create_course(
     access::require_methodist(&user)?;
     let title = non_empty(&request.title, "Название курса")?;
     let mut tx = state.db.begin().await?;
-    let id: Uuid = sqlx::query_scalar("INSERT INTO courses (title, description, owner_id) VALUES ($1, $2, $3) RETURNING id")
+    let id: Uuid = sqlx::query_scalar(INSERT_COURSE)
         .bind(title)
         .bind(request.description.trim())
         .bind(user.id)
         .fetch_one(&mut *tx)
         .await?;
-    AuditEntry::new("course.create", "course").by(Some(user.id), Some(ip)).on(id).in_course(id).record(&mut *tx).await?;
+    AuditEntry::new("course.create", "course")
+        .by(Some(user.id), Some(ip))
+        .on(id)
+        .in_course(id)
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(Created { id })))
 }
@@ -130,6 +141,9 @@ struct CourseRow {
     archived: bool,
 }
 
+const COURSE_QUERY: &str = "SELECT c.title, c.description, c.owner_id, o.display_name AS owner_name, c.archived_at IS NOT NULL AS archived
+         FROM courses c JOIN users o ON o.id = c.owner_id WHERE c.id = $1";
+
 /// Карточка курса.
 #[utoipa::path(get, path = "/api/courses/{course_id}", tag = "courses", params(("course_id" = Uuid, Path)),
     responses((status = 200, body = CourseDetail), (status = 404)))]
@@ -138,14 +152,8 @@ pub(crate) async fn get_course(
     user: CurrentUser,
     Path(course_id): Path<Uuid>,
 ) -> ApiResult<Json<CourseDetail>> {
-    let role = access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_view)?;
-    let row: CourseRow = sqlx::query_as(
-        "SELECT c.title, c.description, c.owner_id, o.display_name AS owner_name, c.archived_at IS NOT NULL AS archived
-         FROM courses c JOIN users o ON o.id = c.owner_id WHERE c.id = $1",
-    )
-    .bind(course_id)
-    .fetch_one(&state.db)
-    .await?;
+    let role = access::require_on(&state.db, &user, course_id, CourseRole::can_view).await?;
+    let row: CourseRow = sqlx::query_as(COURSE_QUERY).bind(course_id).fetch_one(&state.db).await?;
     let tests = course_tests(&state, course_id).await?;
     Ok(Json(CourseDetail {
         id: course_id,
@@ -188,23 +196,60 @@ pub(crate) async fn update_course(
     Path(course_id): Path<Uuid>,
     Json(patch): Json<CoursePatch>,
 ) -> ApiResult<StatusCode> {
-    access::require(access::course_role(&state.db, &user, course_id).await?, CourseRole::can_edit)?;
-    let title = patch.title.as_deref().map(|title| non_empty(title, "Название курса")).transpose()?;
+    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_edit).await?;
+    let change = patch.validated()?;
     let mut tx = state.db.begin().await?;
+    store_change(&mut tx, course_id, &change, state.clock.now()).await?;
+    let action = if patch.archived == Some(true) { "course.archive" } else { "course.update" };
+    AuditEntry::new(action, "course")
+        .by(Some(user.id), Some(ip))
+        .on(course_id)
+        .in_course(course_id)
+        .record(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Проверенное изменение курса.
+struct CourseChange<'patch> {
+    title: Option<&'patch str>,
+    description: Option<&'patch str>,
+    archived: Option<bool>,
+}
+
+impl CoursePatch {
+    fn validated(&self) -> ApiResult<CourseChange<'_>> {
+        Ok(CourseChange {
+            title: self
+                .title
+                .as_deref()
+                .map(|title| non_empty(title, "Название курса"))
+                .transpose()?,
+            description: self.description.as_deref().map(str::trim),
+            archived: self.archived,
+        })
+    }
+}
+
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn store_change(
+    tx: &mut PgConnection,
+    course_id: Uuid,
+    change: &CourseChange<'_>,
+    now: OffsetDateTime,
+) -> ApiResult<()> {
     let _updated = sqlx::query(
         "UPDATE courses SET title = coalesce($2, title), description = coalesce($3, description),
                 archived_at = CASE WHEN $4 IS NULL THEN archived_at WHEN $4 THEN coalesce(archived_at, $5) END
          WHERE id = $1",
     )
     .bind(course_id)
-    .bind(title)
-    .bind(patch.description.as_deref().map(str::trim))
-    .bind(patch.archived)
-    .bind(state.clock.now())
+    .bind(change.title)
+    .bind(change.description)
+    .bind(change.archived)
+    .bind(now)
     .execute(&mut *tx)
     .await?;
-    let action = if patch.archived == Some(true) { "course.archive" } else { "course.update" };
-    AuditEntry::new(action, "course").by(Some(user.id), Some(ip)).on(course_id).in_course(course_id).record(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }

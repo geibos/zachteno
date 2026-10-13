@@ -72,7 +72,7 @@ pub(crate) async fn course_role<'conn>(
     Ok(found.and_then(|membership| resolve(user, &membership)))
 }
 
-fn resolve(user: &CurrentUser, membership: &Membership) -> Option<CourseRole> {
+const fn resolve(user: &CurrentUser, membership: &Membership) -> Option<CourseRole> {
     if user.roles.superuser {
         Some(CourseRole::Superuser)
     } else if membership.is_owner && user.roles.methodist {
@@ -88,13 +88,32 @@ fn resolve(user: &CurrentUser, membership: &Membership) -> Option<CourseRole> {
     }
 }
 
+/// Проверка права роли на курсе, например [`CourseRole::can_edit`].
+pub(crate) type RoleCheck = fn(CourseRole) -> bool;
+
 /// Требует роль, для которой `allowed` истинно; иначе «не найдено» или «нет доступа».
-pub(crate) fn require(role: Option<CourseRole>, allowed: fn(CourseRole) -> bool) -> Result<CourseRole, AppError> {
+pub(crate) fn require(
+    role: Option<CourseRole>,
+    allowed: RoleCheck,
+) -> Result<CourseRole, AppError> {
     match role {
         Some(granted) if allowed(granted) => Ok(granted),
         Some(CourseRole::Student) | None => Err(AppError::NotFound),
         Some(_) => Err(AppError::Forbidden),
     }
+}
+
+/// Роль пользователя на курсе, если для неё `allowed` истинно; иначе «не найдено» или
+/// «нет доступа» — как [`require`].
+///
+/// cancel-safe: yes — только чтение.
+pub(crate) async fn require_on<'conn>(
+    executor: impl PgExecutor<'conn>,
+    user: &CurrentUser,
+    course_id: Uuid,
+    allowed: RoleCheck,
+) -> Result<CourseRole, AppError> {
+    require(course_role(executor, user, course_id).await?, allowed)
 }
 
 /// Только методист или суперпользователь.

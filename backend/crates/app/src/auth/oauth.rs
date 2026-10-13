@@ -1,5 +1,8 @@
 //! Вход через Яндекс ID: OAuth 2.0 + PKCE, `state` в cookie браузера (spec identity-auth, design D5).
 
+use std::fmt::Display;
+use std::net::IpAddr;
+
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{AppendHeaders, IntoResponse as _, Response};
@@ -9,7 +12,6 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use sqlx::{FromRow, PgConnection};
 use time::Duration;
-use utoipa::IntoParams;
 use uuid::Uuid;
 
 use crate::audit::AuditEntry;
@@ -21,7 +23,7 @@ use crate::error::{ApiResult, AppError};
 use crate::http::extract::{ClientIp, MaybeUser};
 use crate::state::AppState;
 use crate::streams::invites::join_by_hash;
-use crate::tokens;
+use crate::tokens::{self, IssuedToken};
 
 #[cfg(test)]
 mod tests;
@@ -34,7 +36,7 @@ const STATE_COOKIE: &str = "__Host-oauth";
 const STATE_TTL: Duration = Duration::minutes(10);
 
 /// Параметры начала входа.
-#[derive(Debug, Deserialize, IntoParams)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct StartQuery {
     /// Куда вернуться после входа (только путь этого сайта).
@@ -80,14 +82,33 @@ pub(crate) async fn start(
     let state_token = tokens::issue();
     let verifier = tokens::issue().raw;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let link_user = user.filter(|_| query.intent.as_deref() == Some("link")).map(|current| current.id);
+    let link_user =
+        user.filter(|_| query.intent.as_deref() == Some("link")).map(|current| current.id);
+    save_state(&state, &query, link_user, (&state_token, &verifier)).await?;
+    let location = authorize_location(&state, provider, &state_token, &challenge);
+    let cookie = format!(
+        "{STATE_COOKIE}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600",
+        state_token.raw
+    );
+    redirect(&location, Some(cookie))
+}
+
+/// Сохраняет незавершённый вход.
+///
+/// cancel-safe: yes — один INSERT.
+async fn save_state(
+    state: &AppState,
+    query: &StartQuery,
+    link_user: Option<Uuid>,
+    (state_token, verifier): (&IssuedToken, &str),
+) -> ApiResult<()> {
     let _saved = sqlx::query(
         "INSERT INTO oauth_states (state_hash, provider, pkce_verifier, link_user_id, invite_hash, trusted_hash, next_path, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&state_token.hash)
     .bind(PROVIDER)
-    .bind(&verifier)
+    .bind(verifier)
     .bind(link_user)
     .bind(query.invite.as_deref().map(tokens::digest))
     .bind(query.trusted.as_deref().map(tokens::digest))
@@ -95,38 +116,51 @@ pub(crate) async fn start(
     .bind(state.clock.now())
     .execute(&state.db)
     .await?;
-    let location = format!(
+    Ok(())
+}
+
+/// Адрес страницы входа Яндекса с `state` и PKCE.
+fn authorize_location(
+    state: &AppState,
+    provider: &OAuthClient,
+    state_token: &IssuedToken,
+    challenge: &str,
+) -> String {
+    format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={challenge}&code_challenge_method=S256",
         provider.authorize_url,
         urlencode(&provider.client_id),
-        urlencode(&redirect_uri(&state)),
+        urlencode(&redirect_uri(state)),
         state_token.raw
-    );
-    let cookie = format!("{STATE_COOKIE}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600", state_token.raw);
-    redirect(&location, Some(cookie))
+    )
 }
 
 fn urlencode(raw: &str) -> String {
     raw.bytes()
         .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => char::from(byte).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                char::from(byte).to_string()
+            }
             other => format!("%{other:02X}"),
         })
         .collect()
 }
 
-fn redirect(location: &str, cookie: Option<String>) -> ApiResult<Response> {
-    let location = HeaderValue::from_str(location).map_err(|error| AppError::Internal(error.into()))?;
-    let mut response = (StatusCode::SEE_OTHER, AppendHeaders([(header::LOCATION, location)])).into_response();
-    for value in cookie {
-        let cookie_header = HeaderValue::from_str(&value).map_err(|error| AppError::Internal(error.into()))?;
+fn redirect(target: &str, cookie: Option<String>) -> ApiResult<Response> {
+    let location =
+        HeaderValue::from_str(target).map_err(|error| AppError::Internal(error.into()))?;
+    let mut response =
+        (StatusCode::SEE_OTHER, AppendHeaders([(header::LOCATION, location)])).into_response();
+    if let Some(raw) = cookie {
+        let cookie_header =
+            HeaderValue::from_str(&raw).map_err(|error| AppError::Internal(error.into()))?;
         let _appended = response.headers_mut().append(header::SET_COOKIE, cookie_header);
     }
     Ok(response)
 }
 
 /// Ответ провайдера.
-#[derive(Debug, Deserialize, IntoParams)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct CallbackQuery {
     pub code: Option<String>,
@@ -173,7 +207,9 @@ pub(crate) async fn callback(
 }
 
 fn clear_state_cookie(mut response: Response) -> Response {
-    let cleared = HeaderValue::from_static("__Host-oauth=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
+    let cleared = HeaderValue::from_static(
+        "__Host-oauth=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0",
+    );
     let _appended = response.headers_mut().append(header::SET_COOKIE, cleared);
     response
 }
@@ -181,16 +217,24 @@ fn clear_state_cookie(mut response: Response) -> Response {
 /// Код ошибки для страницы входа.
 type Failure = &'static str;
 
-async fn finish(state: &AppState, ip: std::net::IpAddr, headers: &HeaderMap, query: &CallbackQuery) -> Result<(String, String), Failure> {
-    if query.error.is_some() {
-        return Err("denied");
-    }
-    let (Some(code), Some(raw_state)) = (query.code.as_deref(), query.state.as_deref()) else { return Err("bad_request") };
-    if state_cookie(headers).as_deref() != Some(raw_state) {
-        return Err("state_mismatch");
-    }
-    let pending = take_pending(state, raw_state).await.map_err(|_| "internal")?.ok_or("state_mismatch")?;
-    if state.clock.now() - pending.created_at > STATE_TTL {
+/// Внутренняя ошибка: пользователю — только код `internal`, подробности — в журнал.
+fn internal<E: Display>(error: E) -> Failure {
+    tracing::error!(%error, "вход через Яндекс: внутренняя ошибка");
+    "internal"
+}
+
+/// cancel-safe: NO — после `take_pending` незавершённый вход удалён; отмена до `sign_in`
+/// оставляет пользователя без входа, и вход надо начать заново.
+async fn finish(
+    state: &AppState,
+    ip: IpAddr,
+    headers: &HeaderMap,
+    query: &CallbackQuery,
+) -> Result<(String, String), Failure> {
+    let (code, raw_state) = check_callback(headers, query)?;
+    let pending =
+        take_pending(state, raw_state).await.map_err(internal)?.ok_or("state_mismatch")?;
+    if state.clock.now() > pending.created_at.saturating_add(STATE_TTL) {
         return Err("expired");
     }
     let profile = fetch_profile(state, code, &pending.pkce_verifier).await.map_err(|error| {
@@ -200,6 +244,26 @@ async fn finish(state: &AppState, ip: std::net::IpAddr, headers: &HeaderMap, que
     let next = pending.next_path.clone().unwrap_or_else(|| "/".to_owned());
     let cookie = sign_in(state, &profile, &pending, (ip, headers)).await?;
     Ok((cookie, next))
+}
+
+/// Код авторизации и `state` из ответа провайдера.
+type CodeAndState<'query> = (&'query str, &'query str);
+
+/// Код и `state` из ответа провайдера; `state` должен совпасть с cookie этого браузера.
+fn check_callback<'query>(
+    headers: &HeaderMap,
+    query: &'query CallbackQuery,
+) -> Result<CodeAndState<'query>, Failure> {
+    if query.error.is_some() {
+        return Err("denied");
+    }
+    let (Some(code), Some(raw_state)) = (query.code.as_deref(), query.state.as_deref()) else {
+        return Err("bad_request");
+    };
+    if state_cookie(headers).as_deref() != Some(raw_state) {
+        return Err("state_mismatch");
+    }
+    Ok((code, raw_state))
 }
 
 fn state_cookie(headers: &HeaderMap) -> Option<String> {
@@ -213,7 +277,10 @@ fn state_cookie(headers: &HeaderMap) -> Option<String> {
         .map(|(_, token)| token.to_owned())
 }
 
-async fn take_pending(state: &AppState, raw_state: &str) -> Result<Option<PendingLogin>, sqlx::Error> {
+async fn take_pending(
+    state: &AppState,
+    raw_state: &str,
+) -> Result<Option<PendingLogin>, sqlx::Error> {
     sqlx::query_as(
         "DELETE FROM oauth_states WHERE state_hash = $1 AND provider = $2
          RETURNING pkce_verifier, link_user_id, invite_hash, trusted_hash, next_path, created_at",
@@ -232,8 +299,35 @@ struct TokenResponse {
 /// Обменивает код на токен и читает профиль.
 ///
 /// cancel-safe: yes — только сетевые запросы без изменения состояния.
-async fn fetch_profile(state: &AppState, code: &str, verifier: &str) -> anyhow::Result<YandexProfile> {
-    let provider = state.config.yandex.as_ref().ok_or_else(|| anyhow::anyhow!("Яндекс не настроен"))?;
+async fn fetch_profile(
+    state: &AppState,
+    code: &str,
+    verifier: &str,
+) -> anyhow::Result<YandexProfile> {
+    let provider =
+        state.config.yandex.as_ref().ok_or_else(|| anyhow::anyhow!("Яндекс не настроен"))?;
+    let access_token = exchange_code(state, provider, code, verifier).await?;
+    Ok(state
+        .http_client
+        .get(&provider.userinfo_url)
+        .query(&[("format", "json")])
+        .header(header::AUTHORIZATION, format!("OAuth {access_token}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?)
+}
+
+/// Обменивает код авторизации на токен доступа.
+///
+/// cancel-safe: yes — сетевой запрос без изменения состояния.
+async fn exchange_code(
+    state: &AppState,
+    provider: &OAuthClient,
+    code: &str,
+    verifier: &str,
+) -> anyhow::Result<String> {
     let form = [
         ("grant_type", "authorization_code"),
         ("code", code),
@@ -242,67 +336,97 @@ async fn fetch_profile(state: &AppState, code: &str, verifier: &str) -> anyhow::
         ("code_verifier", verifier),
         ("redirect_uri", &redirect_uri(state)),
     ];
-    let token: TokenResponse = state.http_client.post(&provider.token_url).form(&form).send().await?.error_for_status()?.json().await?;
-    Ok(state
+    let token: TokenResponse = state
         .http_client
-        .get(&provider.userinfo_url)
-        .query(&[("format", "json")])
-        .header(header::AUTHORIZATION, format!("OAuth {}", token.access_token))
+        .post(&provider.token_url)
+        .form(&form)
         .send()
         .await?
         .error_for_status()?
         .json()
-        .await?)
+        .await?;
+    Ok(token.access_token)
 }
 
+/// cancel-safe: yes — всё в одной транзакции.
 async fn sign_in(
     state: &AppState,
     profile: &YandexProfile,
     pending: &PendingLogin,
-    (ip, headers): (std::net::IpAddr, &HeaderMap),
+    (ip, headers): (IpAddr, &HeaderMap),
 ) -> Result<String, Failure> {
-    let mut tx = state.db.begin().await.map_err(|_| "internal")?;
-    let user_id = resolve_user(state, &mut tx, profile, pending, ip).await?;
-    let blocked: bool = sqlx::query_scalar("SELECT blocked_at IS NOT NULL FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|_| "internal")?;
-    if blocked {
-        return Err("blocked");
-    }
+    let mut tx = state.db.begin().await.map_err(internal)?;
+    let user_id = resolve_user(&mut tx, profile, pending, ip).await?;
+    ensure_not_blocked(&mut tx, user_id).await?;
     if let Some(hash) = &pending.invite_hash {
-        join_by_hash(&mut tx, hash, user_id, (ip, state.clock.now())).await.map_err(|_| "internal")?;
+        join_by_hash(&mut tx, hash, user_id, (ip, state.clock.now())).await.map_err(internal)?;
     }
-    let cookie = session::start(&mut *tx, user_id, &ClientMeta::new(state, ip, headers)).await.map_err(|_| "internal")?;
-    let details = serde_json::json!({ "provider": PROVIDER });
-    AuditEntry::new("auth.login", "user").by(Some(user_id), Some(ip)).on(user_id).with(details).record(&mut *tx).await.map_err(|_| "internal")?;
-    tx.commit().await.map_err(|_| "internal")?;
-    cookie.to_str().map(str::to_owned).map_err(|_| "internal")
+    let cookie = session::start(&mut *tx, user_id, &ClientMeta::new(state, ip, headers))
+        .await
+        .map_err(internal)?;
+    audit(&mut tx, "auth.login", user_id, ip).await?;
+    tx.commit().await.map_err(internal)?;
+    cookie.to_str().map(str::to_owned).map_err(internal)
 }
 
+/// cancel-safe: yes — только чтение.
+async fn ensure_not_blocked(tx: &mut PgConnection, user_id: Uuid) -> Result<(), Failure> {
+    let blocked: bool =
+        sqlx::query_scalar("SELECT blocked_at IS NOT NULL FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(internal)?;
+    if blocked { Err("blocked") } else { Ok(()) }
+}
+
+/// Запись аудит-лога о входе или регистрации через Яндекс.
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn audit(
+    tx: &mut PgConnection,
+    action: &'static str,
+    user_id: Uuid,
+    ip: IpAddr,
+) -> Result<(), Failure> {
+    AuditEntry::new(action, "user")
+        .by(Some(user_id), Some(ip))
+        .on(user_id)
+        .with(serde_json::json!({ "provider": PROVIDER }))
+        .record(&mut *tx)
+        .await
+        .map_err(internal)
+}
+
+/// cancel-safe: yes — в транзакции вызывающего.
 async fn resolve_user(
-    state: &AppState,
     tx: &mut PgConnection,
     profile: &YandexProfile,
     pending: &PendingLogin,
-    ip: std::net::IpAddr,
+    ip: IpAddr,
 ) -> Result<Uuid, Failure> {
-    let linked: Option<Uuid> = sqlx::query_scalar("SELECT user_id FROM external_identities WHERE provider = $1 AND subject = $2")
-        .bind(PROVIDER)
-        .bind(&profile.id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|_| "internal")?;
+    let linked: Option<Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM external_identities WHERE provider = $1 AND subject = $2",
+    )
+    .bind(PROVIDER)
+    .bind(&profile.id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(internal)?;
     match (linked, pending.link_user_id) {
         (Some(owner), Some(target)) if owner != target => Err("already_linked"),
         (Some(owner), _) => Ok(owner),
         (None, Some(target)) => link(tx, target, profile).await.map(|()| target),
-        (None, None) => register(state, tx, profile, pending, ip).await,
+        (None, None) => register(tx, profile, pending, ip).await,
     }
 }
 
-async fn link(tx: &mut PgConnection, user_id: Uuid, profile: &YandexProfile) -> Result<(), Failure> {
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn link(
+    tx: &mut PgConnection,
+    user_id: Uuid,
+    profile: &YandexProfile,
+) -> Result<(), Failure> {
     let _linked = sqlx::query("INSERT INTO external_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)")
         .bind(PROVIDER)
         .bind(&profile.id)
@@ -310,33 +434,73 @@ async fn link(tx: &mut PgConnection, user_id: Uuid, profile: &YandexProfile) -> 
         .bind(&profile.default_email)
         .execute(&mut *tx)
         .await
-        .map_err(|_| "internal")?;
+        .map_err(internal)?;
     Ok(())
 }
 
+/// cancel-safe: yes — в транзакции вызывающего.
 async fn register(
-    state: &AppState,
     tx: &mut PgConnection,
     profile: &YandexProfile,
     pending: &PendingLogin,
-    ip: std::net::IpAddr,
+    ip: IpAddr,
 ) -> Result<Uuid, Failure> {
-    let email = profile.default_email.as_deref().and_then(|raw| account::normalize_email(raw).ok()).ok_or("no_email")?;
-    if account::email_taken(&mut *tx, &email).await.map_err(|_| "internal")? {
-        return Err("link_required");
-    }
-    let trusted_link: Option<Uuid> = match &pending.trusted_hash {
-        Some(hash) => sqlx::query_scalar("SELECT id FROM trusted_links WHERE token_hash = $1").bind(hash).fetch_optional(&mut *tx).await.map_err(|_| "internal")?,
-        None => None,
+    let email = free_email(tx, profile).await?;
+    let trusted_link = trusted_link(tx, pending).await?;
+    let name = display_name(profile, &email);
+    let new_user = NewUser {
+        email: &email,
+        display_name: name.trim(),
+        password: None,
+        email_verified: true,
+        trusted: trusted_link.is_some(),
     };
-    let name = [&profile.real_name, &profile.display_name, &profile.login].into_iter().flatten().find(|name| !name.trim().is_empty()).cloned().unwrap_or_else(|| email.clone());
-    let new_user = NewUser { email: &email, display_name: name.trim(), password: None, email_verified: true, trusted: trusted_link.is_some() };
-    let user_id = account::create(&mut *tx, &new_user).await.map_err(|_| "link_required")?;
+    // Email успели занять между проверкой и вставкой — тот же исход, что и при занятом.
+    let user_id = account::create(&mut *tx, &new_user).await.map_err(|_taken| "link_required")?;
     link(tx, user_id, profile).await?;
     if let Some(link_id) = trusted_link {
-        record_trusted_use(tx, link_id, user_id, ip).await.map_err(|_| "internal")?;
+        record_trusted_use(tx, link_id, user_id, ip).await.map_err(internal)?;
     }
-    let _state = state;
-    AuditEntry::new("user.register", "user").by(Some(user_id), Some(ip)).on(user_id).with(serde_json::json!({ "provider": PROVIDER })).record(&mut *tx).await.map_err(|_| "internal")?;
+    audit(tx, "user.register", user_id, ip).await?;
     Ok(user_id)
+}
+
+/// Email профиля, если он корректен и ещё не занят.
+///
+/// cancel-safe: yes — только чтение.
+async fn free_email(tx: &mut PgConnection, profile: &YandexProfile) -> Result<String, Failure> {
+    let email = profile
+        .default_email
+        .as_deref()
+        .and_then(|raw| account::normalize_email(raw).ok())
+        .ok_or("no_email")?;
+    if account::email_taken(&mut *tx, &email).await.map_err(internal)? {
+        return Err("link_required");
+    }
+    Ok(email)
+}
+
+/// Ссылка доверенной регистрации, с которой начат вход.
+///
+/// cancel-safe: yes — только чтение.
+async fn trusted_link(
+    tx: &mut PgConnection,
+    pending: &PendingLogin,
+) -> Result<Option<Uuid>, Failure> {
+    let Some(hash) = &pending.trusted_hash else { return Ok(None) };
+    sqlx::query_scalar("SELECT id FROM trusted_links WHERE token_hash = $1")
+        .bind(hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(internal)
+}
+
+/// Имя из профиля: настоящее, отображаемое или логин; если все пусты — email.
+fn display_name(profile: &YandexProfile, email: &str) -> String {
+    [&profile.real_name, &profile.display_name, &profile.login]
+        .into_iter()
+        .flatten()
+        .find(|name| !name.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| email.to_owned())
 }

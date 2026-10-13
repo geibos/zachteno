@@ -13,7 +13,7 @@ allow-print-in-tests = true
 allow-unwrap-in-tests = true
 
 # easy-peasy: Naming
-allowed-idents-below-min-chars = []
+allowed-idents-below-min-chars = ["at", "by", "db", "id", "ip", "me", "on", "to", "tx", "v4"]
 check-inconsistent-struct-field-initializers = true
 disallowed-names = [
     "arr", "args", "bar", "baz", "content", "contents", "data", "entries", "entry", "foo", "ham",

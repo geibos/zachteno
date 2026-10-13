@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
-use utoipa::{IntoParams, ToSchema};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::access;
@@ -17,7 +17,7 @@ use crate::http::extract::ClientIp;
 use crate::state::AppState;
 
 /// Фильтр списка пользователей.
-#[derive(Debug, Deserialize, IntoParams)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct UserQuery {
     /// Часть email или имени.
@@ -71,7 +71,7 @@ pub(crate) enum GlobalRole {
 }
 
 impl GlobalRole {
-    const fn name(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Superuser => "superuser",
             Self::Methodist => "methodist",
@@ -98,13 +98,18 @@ pub(crate) async fn set_role(
     access::require_superuser(&user)?;
     let mut tx = state.db.begin().await?;
     if change.granted {
-        grant_role(&mut tx, target, change.role.name(), Some(user.id)).await?;
+        grant_role(&mut tx, target, change.role.as_str(), Some(user.id)).await?;
     } else {
         revoke_role(&mut tx, target, change.role).await?;
     }
     let action = if change.granted { "role.grant" } else { "role.revoke" };
-    let details = serde_json::json!({ "role": change.role.name() });
-    AuditEntry::new(action, "user").by(Some(user.id), Some(ip)).on(target).with(details).record(&mut *tx).await?;
+    let details = serde_json::json!({ "role": change.role.as_str() });
+    AuditEntry::new(action, "user")
+        .by(Some(user.id), Some(ip))
+        .on(target)
+        .with(details)
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -112,7 +117,12 @@ pub(crate) async fn set_role(
 /// Выдаёт глобальную роль (идемпотентно).
 ///
 /// cancel-safe: yes — один INSERT.
-pub(crate) async fn grant_role(tx: &mut PgConnection, target: Uuid, role: &str, by: Option<Uuid>) -> ApiResult<()> {
+pub(crate) async fn grant_role(
+    tx: &mut PgConnection,
+    target: Uuid,
+    role: &str,
+    by: Option<Uuid>,
+) -> ApiResult<()> {
     let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
         .bind(target)
         .fetch_one(&mut *tx)
@@ -132,20 +142,35 @@ pub(crate) async fn grant_role(tx: &mut PgConnection, target: Uuid, role: &str, 
 
 async fn revoke_role(tx: &mut PgConnection, target: Uuid, role: GlobalRole) -> ApiResult<()> {
     if role == GlobalRole::Superuser {
-        let _locked = sqlx::query("SELECT 1 FROM user_roles WHERE role = 'superuser' FOR UPDATE").execute(&mut *tx).await?;
-        let others: i64 = sqlx::query_scalar("SELECT count(*) FROM user_roles WHERE role = 'superuser' AND user_id <> $1")
-            .bind(target)
-            .fetch_one(&mut *tx)
-            .await?;
-        if others == 0 {
-            return Err(AppError::Conflict("Нельзя снять роль с последнего суперпользователя".to_owned()));
-        }
+        ensure_other_superuser(tx, target).await?;
     }
     let _deleted = sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role = $2")
         .bind(target)
-        .bind(role.name())
+        .bind(role.as_str())
         .execute(&mut *tx)
         .await?;
+    Ok(())
+}
+
+/// Конфликт, если `target` — последний суперпользователь; строки ролей блокируются до конца
+/// транзакции.
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn ensure_other_superuser(tx: &mut PgConnection, target: Uuid) -> ApiResult<()> {
+    let _locked = sqlx::query("SELECT 1 FROM user_roles WHERE role = 'superuser' FOR UPDATE")
+        .execute(&mut *tx)
+        .await?;
+    let others: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM user_roles WHERE role = 'superuser' AND user_id <> $1",
+    )
+    .bind(target)
+    .fetch_one(&mut *tx)
+    .await?;
+    if others == 0 {
+        return Err(AppError::Conflict(
+            "Нельзя снять роль с последнего суперпользователя".to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -169,20 +194,34 @@ pub(crate) async fn set_blocked(
         return Err(AppError::Conflict("Нельзя заблокировать самого себя".to_owned()));
     }
     let mut tx = state.db.begin().await?;
-    let updated = sqlx::query("UPDATE users SET blocked_at = CASE WHEN $2 THEN $3 END WHERE id = $1")
-        .bind(target)
-        .bind(change.blocked)
-        .bind(state.clock.now())
-        .execute(&mut *tx)
-        .await?;
+    apply_block(&mut tx, target, &change, state.clock.now()).await?;
+    let action = if change.blocked { "user.block" } else { "user.unblock" };
+    AuditEntry::new(action, "user").by(Some(user.id), Some(ip)).on(target).record(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Ставит или снимает блокировку; при блокировке завершает все сессии.
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn apply_block(
+    tx: &mut PgConnection,
+    target: Uuid,
+    change: &BlockChange,
+    now: OffsetDateTime,
+) -> ApiResult<()> {
+    let updated =
+        sqlx::query("UPDATE users SET blocked_at = CASE WHEN $2 THEN $3 END WHERE id = $1")
+            .bind(target)
+            .bind(change.blocked)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
     if updated.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
     if change.blocked {
         session::revoke_all_except(&mut *tx, target, None).await?;
     }
-    let action = if change.blocked { "user.block" } else { "user.unblock" };
-    AuditEntry::new(action, "user").by(Some(user.id), Some(ip)).on(target).record(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }

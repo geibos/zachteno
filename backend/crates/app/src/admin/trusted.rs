@@ -48,7 +48,11 @@ pub(crate) async fn create_link(
         .bind(user.id)
         .fetch_one(&mut *tx)
         .await?;
-    AuditEntry::new("trusted_link.create", "trusted_link").by(Some(user.id), Some(ip)).on(id).record(&mut *tx).await?;
+    AuditEntry::new("trusted_link.create", "trusted_link")
+        .by(Some(user.id), Some(ip))
+        .on(id)
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     let url = format!("{}/register?trusted={}", state.config.http.public_url, token.raw);
     Ok((StatusCode::CREATED, Json(IssuedLink { id, url })))
@@ -66,7 +70,10 @@ pub(crate) struct TrustedLinkSummary {
 
 /// Список ссылок доверенной регистрации.
 #[utoipa::path(get, path = "/api/admin/trusted-links", tag = "admin", responses((status = 200, body = [TrustedLinkSummary])))]
-pub(crate) async fn list_links(State(state): State<AppState>, user: CurrentUser) -> ApiResult<Json<Vec<TrustedLinkSummary>>> {
+pub(crate) async fn list_links(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> ApiResult<Json<Vec<TrustedLinkSummary>>> {
     access::require_superuser(&user)?;
     let links = sqlx::query_as(
         "SELECT l.id, l.label, l.created_at, count(u.id) AS uses
@@ -97,12 +104,12 @@ pub(crate) async fn list_uses(
     Path(link_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<TrustedLinkUse>>> {
     access::require_superuser(&user)?;
-    let uses = sqlx::query_as(
+    let history = sqlx::query_as(
         "SELECT u.user_id, p.email, p.display_name, u.used_at FROM trusted_link_uses u
          JOIN users p ON p.id = u.user_id WHERE u.link_id = $1 ORDER BY u.used_at",
     )
     .bind(link_id)
     .fetch_all(&state.db)
     .await?;
-    Ok(Json(uses))
+    Ok(Json(history))
 }

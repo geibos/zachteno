@@ -1,14 +1,21 @@
 //! Общее состояние обработчиков.
 
+use std::net::IpAddr;
+use std::num::NonZero;
+use std::path::Path;
 use std::sync::Arc;
+use std::thread::available_parallelism;
+use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
+use crate::antifraud::asn::AsnTable;
 use crate::auth::password::Hasher;
 use crate::blobs::{self, Blobs};
 use crate::clock::Clock;
 use crate::config::Config;
+use crate::error::AppError;
 use crate::http::limiter::{Limiter, LoginFailures};
 
 /// Состояние, доступное каждому обработчику.
@@ -30,32 +37,44 @@ pub(crate) struct AppState {
     /// Загрузки картинок на пользователя: 60 подряд, дальше одна в 2 с.
     pub uploads: Arc<Limiter<uuid::Uuid>>,
     /// Таблица IP → ASN.
-    pub asn: Arc<crate::antifraud::asn::AsnTable>,
+    pub asn: Arc<AsnTable>,
     /// Не больше двух картинок обрабатываются одновременно.
-    pub image_permits: Arc<tokio::sync::Semaphore>,
+    pub image_permits: Arc<Semaphore>,
 }
 
 impl AppState {
     /// Собирает состояние из конфигурации и пула.
     pub(crate) fn new(config: Config, db: PgPool) -> anyhow::Result<Self> {
-        let concurrency = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
-        let store = blobs::connect(&config.storage)?;
-        let asn = config.asn_db_path.as_deref().map(|path| crate::antifraud::asn::AsnTable::load(std::path::Path::new(path))).transpose()?.unwrap_or_default();
+        let concurrency = available_parallelism().map_or(4, NonZero::get);
+        let blobs = blobs::connect(&config.storage)?;
+        let asn = load_asn(&config)?;
+        let http_client = reqwest::Client::builder().timeout(Duration::from_secs(15)).build()?;
+        let hasher = Hasher::new(config.secrets.peppers.clone(), concurrency);
         Ok(Self {
             db,
-            blobs: store,
-            image_permits: Arc::new(tokio::sync::Semaphore::new(2)),
-            asn: Arc::new(asn),
-            uploads: Arc::new(Limiter::new(std::time::Duration::from_secs(2), 60)),
-            hasher: Hasher::new(config.secrets.peppers.clone(), concurrency),
             config: Arc::new(config),
+            hasher,
             clock: Clock::System,
             jobs_wake: Arc::new(Notify::new()),
             limits: Arc::new(Limits::production()),
             login_failures: Arc::new(LoginFailures::default()),
-            http_client: reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build()?,
+            http_client,
+            blobs,
+            uploads: Arc::new(Limiter::new(Duration::from_secs(2), 60)),
+            asn: Arc::new(asn),
+            image_permits: Arc::new(Semaphore::new(2)),
         })
     }
+}
+
+/// Таблица IP → ASN из файла `ASN_DB_PATH`; без него — пустая.
+fn load_asn(config: &Config) -> anyhow::Result<AsnTable> {
+    Ok(config
+        .asn_db_path
+        .as_deref()
+        .map(|path| AsnTable::load(Path::new(path)))
+        .transpose()?
+        .unwrap_or_default())
 }
 
 /// Ограничения частоты по IP.
@@ -71,7 +90,6 @@ pub(crate) struct Limits {
 
 impl Limits {
     pub(crate) fn production() -> Self {
-        use std::time::Duration;
         Self {
             login: Limiter::new(Duration::from_secs(6), 10),
             register: Limiter::new(Duration::from_secs(1), 100),
@@ -82,15 +100,14 @@ impl Limits {
     /// Для тестов: практически без ограничений.
     #[cfg(test)]
     pub(crate) fn relaxed() -> Self {
-        use std::time::Duration;
         let loose = || Limiter::new(Duration::from_millis(1), 10_000);
         Self { login: loose(), register: loose(), mail: loose() }
     }
 }
 
 /// Проверка лимита с ответом 429.
-pub(crate) fn throttle(limiter: &Limiter, ip: std::net::IpAddr) -> Result<(), crate::error::AppError> {
+pub(crate) fn throttle(limiter: &Limiter, ip: IpAddr) -> Result<(), AppError> {
     limiter
-        .check(&ip, std::time::Instant::now())
-        .map_err(|wait| crate::error::AppError::TooManyRequests { retry_after_secs: wait.as_secs().max(1) })
+        .check(&ip, Instant::now())
+        .map_err(|wait| AppError::TooManyRequests { retry_after_secs: wait.as_secs().max(1) })
 }

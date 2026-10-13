@@ -50,7 +50,7 @@ pub(crate) async fn issue<'conn>(
             .bind(&token.hash)
             .bind(purpose.name())
             .bind(user_id)
-            .bind(now + purpose.lifetime())
+            .bind(now.saturating_add(purpose.lifetime()))
             .bind(now)
             .execute(executor)
             .await?;
@@ -74,7 +74,7 @@ pub(crate) async fn consume(
     now: OffsetDateTime,
 ) -> Result<Uuid, AppError> {
     let names: Vec<&str> = purposes.iter().map(|purpose| purpose.name()).collect();
-    let row: Option<TokenRow> = sqlx::query_as(
+    let found: Option<TokenRow> = sqlx::query_as(
         "SELECT user_id, expires_at, used_at IS NOT NULL AS used FROM auth_tokens
          WHERE token_hash = $1 AND kind = ANY($2) FOR UPDATE",
     )
@@ -82,18 +82,28 @@ pub(crate) async fn consume(
     .bind(&names)
     .fetch_optional(&mut *connection)
     .await?;
-    let row = row.filter(|found| !found.used).ok_or_else(|| {
+    let row = found.filter(|token| !token.used).ok_or_else(|| {
         AppError::BadRequest("Ссылка недействительна или уже использована".to_owned())
     })?;
     if row.expires_at < now {
         return Err(AppError::Gone("Ссылка устарела — запросите новую".to_owned()));
     }
+    mark_used(connection, raw, now).await?;
+    Ok(row.user_id)
+}
+
+/// cancel-safe: yes — работает в транзакции вызывающего.
+async fn mark_used(
+    connection: &mut PgConnection,
+    raw: &str,
+    now: OffsetDateTime,
+) -> Result<(), AppError> {
     let _used = sqlx::query("UPDATE auth_tokens SET used_at = $2 WHERE token_hash = $1")
         .bind(tokens::digest(raw))
         .bind(now)
         .execute(&mut *connection)
         .await?;
-    Ok(row.user_id)
+    Ok(())
 }
 
 /// Проверяет токен без погашения — чтобы не считать дорогой хеш пароля по заведомо мёртвой ссылке.
@@ -114,9 +124,17 @@ pub(crate) async fn ensure_usable<'conn>(
     .bind(&names)
     .fetch_optional(executor)
     .await?;
+    usable(row.as_ref(), now)
+}
+
+fn usable(row: Option<&TokenRow>, now: OffsetDateTime) -> Result<(), AppError> {
     match row {
-        Some(found) if found.used => Err(AppError::BadRequest("Ссылка уже использована".to_owned())),
-        Some(found) if found.expires_at < now => Err(AppError::Gone("Ссылка устарела — запросите новую".to_owned())),
+        Some(found) if found.used => {
+            Err(AppError::BadRequest("Ссылка уже использована".to_owned()))
+        }
+        Some(found) if found.expires_at < now => {
+            Err(AppError::Gone("Ссылка устарела — запросите новую".to_owned()))
+        }
         Some(_) => Ok(()),
         None => Err(AppError::BadRequest("Ссылка недействительна".to_owned())),
     }

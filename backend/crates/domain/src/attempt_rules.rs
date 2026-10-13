@@ -1,8 +1,8 @@
 //! Срок попытки и правила навигации (spec `test-taking`, `streams-enrollment`).
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use time::{Duration, OffsetDateTime};
+use utoipa::ToSchema;
 
 #[cfg(test)]
 mod tests;

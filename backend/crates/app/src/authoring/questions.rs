@@ -4,6 +4,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use domain::scoring::{QuestionKind, ScoredOption, ScoredQuestion};
+use domain::validation::{QuestionRuleViolation, check_question};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use sqlx::PgConnection;
@@ -70,27 +71,33 @@ impl QuestionInput {
 
     /// Вес > 0, штрафы ≤ 0; у опубликованного теста — все правила публикации.
     fn validate(&self, status: TestStatus) -> ApiResult<()> {
-        let scored = ScoredQuestion {
+        match check_question(&self.scored()) {
+            Err(violation) if status == TestStatus::Published || is_structural(violation) => {
+                Err(AppError::BadRequest(violation.to_string()))
+            }
+            Ok(()) | Err(_) => Ok(()),
+        }
+    }
+
+    /// Вопрос в виде, понятном проверке правил.
+    fn scored(&self) -> ScoredQuestion {
+        ScoredQuestion {
             kind: self.kind,
             weight: self.weight(),
             options: self
                 .options
                 .iter()
-                .map(|option| ScoredOption { option_id: Uuid::nil(), is_correct: option.is_correct, penalty: self.penalty(option) })
+                .map(|option| ScoredOption {
+                    option_id: Uuid::nil(),
+                    is_correct: option.is_correct,
+                    penalty: self.penalty(option),
+                })
                 .collect(),
-        };
-        let checked = domain::validation::check_question(&scored);
-        match checked {
-            Ok(()) => Ok(()),
-            Err(violation) if status == TestStatus::Published || is_structural(violation) => {
-                Err(AppError::BadRequest(violation.to_string()))
-            }
-            Err(_) => Ok(()),
         }
     }
 }
 
-const fn is_structural(violation: domain::validation::QuestionRuleViolation) -> bool {
+const fn is_structural(violation: QuestionRuleViolation) -> bool {
     use domain::validation::QuestionRuleViolation as Rule;
     matches!(violation, Rule::NonPositiveWeight | Rule::PositivePenalty | Rule::FreeTextHasOptions)
 }
@@ -151,7 +158,10 @@ pub(crate) async fn delete_question(
     let mut tx = state.db.begin().await?;
     let test_id = test_of(&mut tx, question_id).await?;
     let test = editable(&mut tx, &user, test_id).await?;
-    let _deleted = sqlx::query("DELETE FROM questions WHERE id = $1").bind(question_id).execute(&mut *tx).await?;
+    let _deleted = sqlx::query("DELETE FROM questions WHERE id = $1")
+        .bind(question_id)
+        .execute(&mut *tx)
+        .await?;
     audit(&mut tx, (&user, ClientIp(ip)), "question.delete", (&test, question_id)).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
@@ -203,7 +213,11 @@ async fn test_of(tx: &mut PgConnection, question_id: Uuid) -> ApiResult<Uuid> {
         .ok_or(AppError::NotFound)
 }
 
-async fn write_question(tx: &mut PgConnection, question_id: Uuid, input: &QuestionInput) -> ApiResult<()> {
+async fn write_question(
+    tx: &mut PgConnection,
+    question_id: Uuid,
+    input: &QuestionInput,
+) -> ApiResult<()> {
     let _updated = sqlx::query("UPDATE questions SET kind = $2, body = $3, weight = $4, image_id = $5, image_alt = $6 WHERE id = $1")
         .bind(question_id)
         .bind(input.kind.as_str())
@@ -213,7 +227,10 @@ async fn write_question(tx: &mut PgConnection, question_id: Uuid, input: &Questi
         .bind(input.image_alt.trim())
         .execute(&mut *tx)
         .await?;
-    let _cleared = sqlx::query("DELETE FROM options WHERE question_id = $1").bind(question_id).execute(&mut *tx).await?;
+    let _cleared = sqlx::query("DELETE FROM options WHERE question_id = $1")
+        .bind(question_id)
+        .execute(&mut *tx)
+        .await?;
     for (position, option) in (0_i32..).zip(&input.options) {
         insert_option(tx, question_id, position, (option, input.penalty(option))).await?;
     }
@@ -251,6 +268,12 @@ async fn audit(
     (test, question_id): (&TestRow, Uuid),
 ) -> ApiResult<()> {
     let details = serde_json::json!({ "test_id": test.id });
-    AuditEntry::new(action, "question").by(Some(user.id), Some(ip)).on(question_id).in_course(test.course_id).with(details).record(&mut *tx).await?;
+    AuditEntry::new(action, "question")
+        .by(Some(user.id), Some(ip))
+        .on(question_id)
+        .in_course(test.course_id)
+        .with(details)
+        .record(&mut *tx)
+        .await?;
     Ok(())
 }

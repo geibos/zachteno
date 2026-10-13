@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -21,9 +21,10 @@ use crate::state::AppState;
 #[derive(Debug, Deserialize, ToSchema)]
 pub(crate) struct ChangePasswordRequest {
     /// Текущий пароль; не нужен, если пароля ещё нет.
-    #[serde(default)]
-    pub current_password: Option<String>,
-    pub new_password: String,
+    #[serde(default, rename = "current_password")]
+    pub current: Option<String>,
+    #[serde(rename = "new_password")]
+    pub replacement: String,
 }
 
 /// Меняет пароль и завершает остальные сессии.
@@ -35,21 +36,27 @@ pub(crate) async fn change_password(
     user: CurrentUser,
     Json(request): Json<ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
-    password::check_strength(&request.new_password).map_err(|weak| AppError::BadRequest(weak.to_string()))?;
+    password::check_strength(&request.replacement)
+        .map_err(|weak| AppError::BadRequest(weak.to_string()))?;
     if user.has_password {
-        verify_current(&state, &user, request.current_password.unwrap_or_default()).await?;
+        verify_current(&state, &user, request.current.unwrap_or_default()).await?;
     }
-    let hash = state.hasher.hash(request.new_password).await?;
+    let hash = state.hasher.hash(request.replacement).await?;
     let mut tx = state.db.begin().await?;
     account::set_password(&mut *tx, user.id, &hash).await?;
     session::revoke_all_except(&mut *tx, user.id, Some(user.session_id)).await?;
-    AuditEntry::new("auth.password_change", "user").by(Some(user.id), Some(ip)).on(user.id).record(&mut *tx).await?;
+    AuditEntry::new("auth.password_change", "user")
+        .by(Some(user.id), Some(ip))
+        .on(user.id)
+        .record(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn verify_current(state: &AppState, user: &CurrentUser, current: String) -> ApiResult<()> {
-    let row = account::find_for_login(&state.db, &user.email).await?.ok_or(AppError::Unauthorized)?;
+    let row =
+        account::find_for_login(&state.db, &user.email).await?.ok_or(AppError::Unauthorized)?;
     let stored = row.stored_hash().ok_or(AppError::InvalidCredentials)?;
     match state.hasher.verify(current, stored).await? {
         Verification::Valid | Verification::ValidNeedsRehash => Ok(()),
@@ -73,7 +80,10 @@ pub(crate) struct SessionInfo {
 
 /// Список моих активных сессий.
 #[utoipa::path(get, path = "/api/profile/sessions", tag = "profile", responses((status = 200, body = [SessionInfo])))]
-pub(crate) async fn list_sessions(State(state): State<AppState>, user: CurrentUser) -> ApiResult<Json<Vec<SessionInfo>>> {
+pub(crate) async fn list_sessions(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> ApiResult<Json<Vec<SessionInfo>>> {
     let sessions: Vec<SessionInfo> = sqlx::query_as(
         "SELECT id, created_at, last_seen_at, user_agent, host(ip) AS ip, id = $2 AS current
          FROM sessions WHERE user_id = $1 ORDER BY last_seen_at DESC",
@@ -112,7 +122,10 @@ pub(crate) struct Identity {
 
 /// Мои внешние аккаунты.
 #[utoipa::path(get, path = "/api/profile/identities", tag = "profile", responses((status = 200, body = [Identity])))]
-pub(crate) async fn list_identities(State(state): State<AppState>, user: CurrentUser) -> ApiResult<Json<Vec<Identity>>> {
+pub(crate) async fn list_identities(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> ApiResult<Json<Vec<Identity>>> {
     let identities = sqlx::query_as("SELECT provider, email, created_at FROM external_identities WHERE user_id = $1 ORDER BY created_at")
         .bind(user.id)
         .fetch_all(&state.db)
@@ -129,20 +142,42 @@ pub(crate) async fn unlink_identity(
     Path(provider): Path<String>,
 ) -> ApiResult<StatusCode> {
     let mut tx = state.db.begin().await?;
-    let others: i64 = sqlx::query_scalar("SELECT count(*) FROM external_identities WHERE user_id = $1 AND provider <> $2")
-        .bind(user.id)
-        .bind(&provider)
-        .fetch_one(&mut *tx)
+    ensure_other_login(&mut tx, &user, &provider).await?;
+    let _deleted =
+        sqlx::query("DELETE FROM external_identities WHERE user_id = $1 AND provider = $2")
+            .bind(user.id)
+            .bind(&provider)
+            .execute(&mut *tx)
+            .await?;
+    AuditEntry::new("auth.identity_unlink", "user")
+        .by(Some(user.id), Some(ip))
+        .on(user.id)
+        .with(serde_json::json!({ "provider": provider }))
+        .record(&mut *tx)
         .await?;
-    if !user.has_password && others == 0 {
-        return Err(AppError::Conflict("Это единственный способ входа — сначала задайте пароль".to_owned()));
-    }
-    let _deleted = sqlx::query("DELETE FROM external_identities WHERE user_id = $1 AND provider = $2")
-        .bind(user.id)
-        .bind(&provider)
-        .execute(&mut *tx)
-        .await?;
-    AuditEntry::new("auth.identity_unlink", "user").by(Some(user.id), Some(ip)).on(user.id).with(serde_json::json!({ "provider": provider })).record(&mut *tx).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Конфликт, если без `provider` у пользователя не останется способа войти.
+///
+/// cancel-safe: yes — только чтение.
+async fn ensure_other_login(
+    tx: &mut PgConnection,
+    user: &CurrentUser,
+    provider: &str,
+) -> ApiResult<()> {
+    let others: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM external_identities WHERE user_id = $1 AND provider <> $2",
+    )
+    .bind(user.id)
+    .bind(provider)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !user.has_password && others == 0 {
+        return Err(AppError::Conflict(
+            "Это единственный способ входа — сначала задайте пароль".to_owned(),
+        ));
+    }
+    Ok(())
 }

@@ -7,6 +7,7 @@ use domain::scoring::{self, FinalScorePolicy};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use sqlx::types::Json;
 use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -50,7 +51,7 @@ pub(crate) struct AttemptRecord {
     pub submit_reason: Option<String>,
     pub score: Decimal,
     pub max_score: Decimal,
-    pub layout: sqlx::types::Json<Vec<PlacedQuestion>>,
+    pub layout: Json<Vec<PlacedQuestion>>,
     pub has_links: bool,
 }
 
@@ -63,6 +64,9 @@ pub(crate) struct AnswerRecord {
     pub text_answer: Option<String>,
     pub score: Option<Decimal>,
 }
+
+/// Ответы по паре (попытка, вопрос).
+pub(crate) type AnswersByKey = HashMap<(Uuid, Uuid), AnswerRecord>;
 
 /// Строка таблицы: попытка с номером и итогом студента.
 #[derive(Debug, Clone)]
@@ -78,15 +82,10 @@ pub(crate) struct Results {
     pub test: TestRow,
     pub questions: Vec<QuestionDetail>,
     pub rows: Vec<ResultRow>,
-    pub answers: HashMap<(Uuid, Uuid), AnswerRecord>,
+    pub answers: AnswersByKey,
 }
 
-/// Загружает сданные попытки теста (без предпросмотра) с фильтрами.
-///
-/// cancel-safe: yes — только чтение.
-pub(crate) async fn load(state: &AppState, test: TestRow, query: &ResultsQuery) -> ApiResult<Results> {
-    let attempts: Vec<AttemptRecord> = sqlx::query_as(
-        "SELECT a.id AS attempt_id, a.user_id, u.display_name, u.email, s.name AS stream_name,
+const ATTEMPTS_QUERY: &str = "SELECT a.id AS attempt_id, a.user_id, u.display_name, u.email, s.name AS stream_name,
                 coalesce(m.removed_at IS NOT NULL, false) AS removed, a.started_at, a.submitted_at, a.submit_reason,
                 coalesce(a.score, 0) AS score, a.max_score, a.layout,
                 EXISTS (SELECT 1 FROM identity_links l WHERE (l.user_a = a.user_id OR l.user_b = a.user_id)
@@ -95,32 +94,50 @@ pub(crate) async fn load(state: &AppState, test: TestRow, query: &ResultsQuery) 
          LEFT JOIN streams s ON s.id = a.stream_id
          LEFT JOIN stream_members m ON m.stream_id = a.stream_id AND m.user_id = a.user_id
          WHERE a.test_id = $1 AND NOT a.is_preview AND a.submitted_at IS NOT NULL AND ($2::uuid IS NULL OR a.stream_id = $2)
-         ORDER BY u.display_name, a.user_id, a.submitted_at",
-    )
-    .bind(test.id)
-    .bind(query.stream_id)
-    .fetch_all(&state.db)
-    .await?;
-    let answers: Vec<AnswerRecord> = sqlx::query_as(
-        "SELECT r.attempt_id, r.question_id, r.selected_option_ids, r.text_answer, r.score
+         ORDER BY u.display_name, a.user_id, a.submitted_at";
+
+const ANSWERS_QUERY: &str =
+    "SELECT r.attempt_id, r.question_id, r.selected_option_ids, r.text_answer, r.score
          FROM answers r JOIN attempts a ON a.id = r.attempt_id
-         WHERE a.test_id = $1 AND NOT a.is_preview AND a.submitted_at IS NOT NULL",
-    )
-    .bind(test.id)
-    .fetch_all(&state.db)
-    .await?;
+         WHERE a.test_id = $1 AND NOT a.is_preview AND a.submitted_at IS NOT NULL";
+
+/// Загружает сданные попытки теста (без предпросмотра) с фильтрами.
+///
+/// cancel-safe: yes — только чтение.
+pub(crate) async fn load(
+    state: &AppState,
+    test: TestRow,
+    query: &ResultsQuery,
+) -> ApiResult<Results> {
+    let attempts: Vec<AttemptRecord> = sqlx::query_as(ATTEMPTS_QUERY)
+        .bind(test.id)
+        .bind(query.stream_id)
+        .fetch_all(&state.db)
+        .await?;
+    let answers: Vec<AnswerRecord> =
+        sqlx::query_as(ANSWERS_QUERY).bind(test.id).fetch_all(&state.db).await?;
     let questions = model::load_questions(&state.db, test.id).await?;
     let policy = FinalScorePolicy::parse(&test.final_policy).unwrap_or(FinalScorePolicy::Best);
     Ok(Results {
-        rows: select_rows(attempts, policy, query.mode),
-        answers: answers.into_iter().map(|answer| ((answer.attempt_id, answer.question_id), answer)).collect(),
         test,
         questions,
+        rows: select_rows(attempts, policy, query.mode),
+        answers: answers
+            .into_iter()
+            .map(|answer| ((answer.attempt_id, answer.question_id), answer))
+            .collect(),
     })
 }
 
-fn select_rows(attempts: Vec<AttemptRecord>, policy: FinalScorePolicy, mode: AttemptsMode) -> Vec<ResultRow> {
-    let mut by_user: Vec<(Uuid, Vec<AttemptRecord>)> = Vec::new();
+/// Попытки, сгруппированные по студенту подряд.
+type ByUser = Vec<(Uuid, Vec<AttemptRecord>)>;
+
+fn select_rows(
+    attempts: Vec<AttemptRecord>,
+    policy: FinalScorePolicy,
+    mode: AttemptsMode,
+) -> Vec<ResultRow> {
+    let mut by_user = ByUser::new();
     for attempt in attempts {
         match by_user.last_mut() {
             Some((user_id, group)) if *user_id == attempt.user_id => group.push(attempt),
@@ -130,11 +147,17 @@ fn select_rows(attempts: Vec<AttemptRecord>, policy: FinalScorePolicy, mode: Att
     by_user.into_iter().flat_map(|(_, group)| rows_for_student(group, policy, mode)).collect()
 }
 
-fn rows_for_student(group: Vec<AttemptRecord>, policy: FinalScorePolicy, mode: AttemptsMode) -> Vec<ResultRow> {
+fn rows_for_student(
+    group: Vec<AttemptRecord>,
+    policy: FinalScorePolicy,
+    mode: AttemptsMode,
+) -> Vec<ResultRow> {
     let scores: Vec<Decimal> = group.iter().map(|attempt| attempt.score).collect();
     let final_score = scoring::final_score(policy, &scores).map(|score| score.normalize());
     let chosen = match policy {
-        FinalScorePolicy::Best => scores.iter().enumerate().max_by_key(|(_, score)| **score).map(|(index, _)| index),
+        FinalScorePolicy::Best => {
+            scores.iter().enumerate().max_by_key(|(_, score)| **score).map(|(index, _)| index)
+        }
         FinalScorePolicy::Last | FinalScorePolicy::Average => group.len().checked_sub(1),
     };
     group
@@ -166,14 +189,18 @@ impl Results {
         self.questions
             .iter()
             .map(|question| {
-                let in_attempt = row.attempt.layout.0.iter().any(|slot| slot.question_id == question.id);
+                let in_attempt =
+                    row.attempt.layout.0.iter().any(|slot| slot.question_id == question.id);
                 let answer = self.answers.get(&(row.attempt.attempt_id, question.id));
                 Cell {
                     question_id: question.id,
                     in_attempt,
-                    score: (in_attempt && question.kind.is_scored())
-                        .then(|| answer.and_then(|found| found.score).unwrap_or_default().normalize()),
-                    selected: answer.map(|found| option_labels(question, &found.selected_option_ids)).unwrap_or_default(),
+                    score: (in_attempt && question.kind.is_scored()).then(|| {
+                        answer.and_then(|found| found.score).unwrap_or_default().normalize()
+                    }),
+                    selected: answer
+                        .map(|found| option_labels(question, &found.selected_option_ids))
+                        .unwrap_or_default(),
                     text_answer: answer.and_then(|found| found.text_answer.clone()),
                     free_text: !question.kind.is_scored(),
                 }
@@ -187,6 +214,12 @@ fn option_labels(question: &QuestionDetail, selected: &[Uuid]) -> Vec<String> {
         .options
         .iter()
         .filter(|option| selected.contains(&option.id))
-        .map(|option| if option.body.trim().is_empty() { "[картинка]".to_owned() } else { option.body.clone() })
+        .map(|option| {
+            if option.body.trim().is_empty() {
+                "[картинка]".to_owned()
+            } else {
+                option.body.clone()
+            }
+        })
         .collect()
 }

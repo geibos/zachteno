@@ -23,9 +23,12 @@ const BODY_LIMIT_BYTES: usize = 12 * 1024 * 1024;
 #[openapi(info(title = "Зачтено API", description = "Сервис тестирования студентов"))]
 struct ApiDoc;
 
-/// Маршруты API без состояния — для генерации OpenAPI.
+/// Маршруты API без состояния — для генерации `OpenAPI`.
 pub(crate) fn api() -> OpenApiRouter<AppState> {
-    OpenApiRouter::with_openapi(ApiDoc::openapi()).merge(auth::routes()).merge(admin::routes()).merge(authoring::routes())
+    OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .merge(auth::routes())
+        .merge(admin::routes())
+        .merge(authoring::routes())
         .merge(streams::routes())
         .merge(attempts::routes())
         .merge(reporting::routes())
@@ -33,7 +36,7 @@ pub(crate) fn api() -> OpenApiRouter<AppState> {
         .merge(audit::routes())
 }
 
-/// Документ OpenAPI в JSON.
+/// Документ `OpenAPI` в JSON.
 pub(crate) fn openapi_json() -> anyhow::Result<String> {
     let (_router, document) = api().split_for_parts();
     Ok(document.to_pretty_json()?)

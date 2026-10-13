@@ -1,9 +1,11 @@
 //! Регистрация по email и паролю, в том числе по доверенной ссылке (spec identity-auth).
 
+use std::net::IpAddr;
+
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{AppendHeaders, IntoResponse, Response};
+use axum::response::{AppendHeaders, IntoResponse as _, Response};
 use serde::Deserialize;
 use sqlx::PgConnection;
 use utoipa::ToSchema;
@@ -41,12 +43,7 @@ pub(crate) async fn register(
     Json(request): Json<RegisterRequest>,
 ) -> ApiResult<Response> {
     throttle(&state.limits.register, ip)?;
-    let email = account::normalize_email(&request.email)?;
-    let name = account::normalize_name(&request.display_name)?;
-    password::check_strength(&request.password).map_err(|weak| AppError::BadRequest(weak.to_string()))?;
-    if account::email_taken(&state.db, &email).await? {
-        return Err(AppError::Conflict("Этот email уже зарегистрирован. Войдите или восстановите пароль.".to_owned()));
-    }
+    let (email, name) = validate(&state, &request).await?;
     let hash = state.hasher.hash(request.password).await?;
     let mut tx = state.db.begin().await?;
     let trusted_link = match &request.trusted_token {
@@ -59,7 +56,24 @@ pub(crate) async fn register(
     let user = session::load_user(&mut *tx, user_id, Uuid::nil()).await?;
     tx.commit().await?;
     state.jobs_wake.notify_one();
-    Ok((StatusCode::CREATED, AppendHeaders([(header::SET_COOKIE, cookie)]), Json(user)).into_response())
+    Ok((StatusCode::CREATED, AppendHeaders([(header::SET_COOKIE, cookie)]), Json(user))
+        .into_response())
+}
+
+/// Нормализованные email и имя; пароль достаточно стойкий, email свободен.
+///
+/// cancel-safe: yes — только чтение.
+async fn validate(state: &AppState, request: &RegisterRequest) -> ApiResult<(String, String)> {
+    let email = account::normalize_email(&request.email)?;
+    let name = account::normalize_name(&request.display_name)?;
+    password::check_strength(&request.password)
+        .map_err(|weak| AppError::BadRequest(weak.to_string()))?;
+    if account::email_taken(&state.db, &email).await? {
+        return Err(AppError::Conflict(
+            "Этот email уже зарегистрирован. Войдите или восстановите пароль.".to_owned(),
+        ));
+    }
+    Ok((email, name))
 }
 
 struct Fields<'fields> {
@@ -73,7 +87,7 @@ async fn create_account(
     state: &AppState,
     tx: &mut PgConnection,
     fields: &Fields<'_>,
-    ip: std::net::IpAddr,
+    ip: IpAddr,
 ) -> ApiResult<Uuid> {
     let new_user = NewUser {
         email: fields.email,
@@ -87,7 +101,11 @@ async fn create_account(
         record_trusted_use(&mut *tx, link_id, user_id, ip).await?;
     }
     send_verification(state, tx, user_id, (fields.email, fields.name)).await?;
-    AuditEntry::new("user.register", "user").by(Some(user_id), Some(ip)).on(user_id).record(&mut *tx).await?;
+    AuditEntry::new("user.register", "user")
+        .by(Some(user_id), Some(ip))
+        .on(user_id)
+        .record(&mut *tx)
+        .await?;
     Ok(user_id)
 }
 
@@ -101,7 +119,7 @@ pub(crate) async fn send_verification(
     (email, name): (&str, &str),
 ) -> ApiResult<()> {
     let token = onetime::issue(&mut *tx, Purpose::VerifyEmail, user_id, state.clock.now()).await?;
-    let letter = Email::VerifyEmail { to: email.to_owned(), name: name.to_owned(), token };
+    let letter = Email::VerifyAddress { to: email.to_owned(), name: name.to_owned(), token };
     mail::queue(&mut *tx, &letter).await?;
     Ok(())
 }
@@ -110,11 +128,14 @@ pub(crate) async fn send_verification(
 ///
 /// cancel-safe: yes — только чтение.
 pub(crate) async fn trusted_link_id(tx: &mut PgConnection, raw: &str) -> ApiResult<Option<Uuid>> {
-    let link: Option<Uuid> = sqlx::query_scalar("SELECT id FROM trusted_links WHERE token_hash = $1")
-        .bind(tokens::digest(raw))
-        .fetch_optional(&mut *tx)
-        .await?;
-    link.map(Some).ok_or_else(|| AppError::BadRequest("Ссылка доверенной регистрации недействительна".to_owned()))
+    let link: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM trusted_links WHERE token_hash = $1")
+            .bind(tokens::digest(raw))
+            .fetch_optional(&mut *tx)
+            .await?;
+    link.map(Some).ok_or_else(|| {
+        AppError::BadRequest("Ссылка доверенной регистрации недействительна".to_owned())
+    })
 }
 
 /// Записывает использование доверенной ссылки.
@@ -124,14 +145,19 @@ pub(crate) async fn record_trusted_use(
     tx: &mut PgConnection,
     link_id: Uuid,
     user_id: Uuid,
-    ip: std::net::IpAddr,
+    ip: IpAddr,
 ) -> ApiResult<()> {
-    let _inserted = sqlx::query("INSERT INTO trusted_link_uses (link_id, user_id, ip) VALUES ($1, $2, $3)")
-        .bind(link_id)
-        .bind(user_id)
-        .bind(ip)
-        .execute(&mut *tx)
+    let _inserted =
+        sqlx::query("INSERT INTO trusted_link_uses (link_id, user_id, ip) VALUES ($1, $2, $3)")
+            .bind(link_id)
+            .bind(user_id)
+            .bind(ip)
+            .execute(&mut *tx)
+            .await?;
+    AuditEntry::new("trusted_link.use", "trusted_link")
+        .by(Some(user_id), Some(ip))
+        .on(link_id)
+        .record(&mut *tx)
         .await?;
-    AuditEntry::new("trusted_link.use", "trusted_link").by(Some(user_id), Some(ip)).on(link_id).record(&mut *tx).await?;
     Ok(())
 }
