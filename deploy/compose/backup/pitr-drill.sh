@@ -43,7 +43,7 @@ archive_mode = off
 CONF
   pg_ctl -D "$PGDATA" -w -t 600 -l /tmp/restore.log start -o "-c listen_addresses= -c port=5433" >/dev/null
   for _ in $(seq 1 120); do [ "$(psql -p 5433 -At -c "select pg_is_in_recovery()" postgres)" = f ] && break; sleep 2; done
-  psql -p 5433 -At -d zachteno -c "select string_agg(name, \",\" order by name) from ops_status where name like '"'"'pitr_drill_%'"'"'"
+  psql -p 5433 -At -d zachteno -c "select string_agg(name, chr(44) order by name) from ops_status where name like '"'"'pitr_drill_%'"'"'"
 ')
 echo "метки в копии на момент T: ${result:-нет}"
 [ "$result" = pitr_drill_a ] || { echo "учение не пройдено: ожидалась только pitr_drill_a" >&2; exit 1; }
