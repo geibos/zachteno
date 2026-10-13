@@ -8,7 +8,7 @@ use tokio::sync::Notify;
 use crate::auth::password::Hasher;
 use crate::clock::Clock;
 use crate::config::Config;
-use crate::http::limiter::Limiter;
+use crate::http::limiter::{Limiter, LoginFailures};
 
 /// Состояние, доступное каждому обработчику.
 #[derive(Clone)]
@@ -19,8 +19,10 @@ pub(crate) struct AppState {
     pub clock: Clock,
     /// Будит воркер очереди задач после постановки новой.
     pub jobs_wake: Arc<Notify>,
-    /// Ограничение частоты входа по IP.
-    pub login_limiter: Arc<Limiter>,
+    /// Ограничения частоты по IP: вход, регистрация, письма.
+    pub limits: Arc<Limits>,
+    /// Неудачные входы по email.
+    pub login_failures: Arc<LoginFailures>,
     pub http_client: reqwest::Client,
 }
 
@@ -34,8 +36,46 @@ impl AppState {
             config: Arc::new(config),
             clock: Clock::System,
             jobs_wake: Arc::new(Notify::new()),
-            login_limiter: Arc::new(Limiter::new(std::time::Duration::from_secs(6), 10)),
+            limits: Arc::new(Limits::production()),
+            login_failures: Arc::new(LoginFailures::default()),
             http_client: reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build()?,
         })
     }
+}
+
+/// Ограничения частоты по IP.
+#[derive(Debug)]
+pub(crate) struct Limits {
+    /// Вход: 10 подряд, дальше раз в 6 с.
+    pub login: Limiter,
+    /// Регистрация: общежитие за одним NAT — 100 подряд, дальше раз в секунду.
+    pub register: Limiter,
+    /// Письма (восстановление, повторное подтверждение): 10 подряд, дальше раз в 30 с.
+    pub mail: Limiter,
+}
+
+impl Limits {
+    pub(crate) fn production() -> Self {
+        use std::time::Duration;
+        Self {
+            login: Limiter::new(Duration::from_secs(6), 10),
+            register: Limiter::new(Duration::from_secs(1), 100),
+            mail: Limiter::new(Duration::from_secs(30), 10),
+        }
+    }
+
+    /// Для тестов: практически без ограничений.
+    #[cfg(test)]
+    pub(crate) fn relaxed() -> Self {
+        use std::time::Duration;
+        let loose = || Limiter::new(Duration::from_millis(1), 10_000);
+        Self { login: loose(), register: loose(), mail: loose() }
+    }
+}
+
+/// Проверка лимита с ответом 429.
+pub(crate) fn throttle(limiter: &Limiter, ip: std::net::IpAddr) -> Result<(), crate::error::AppError> {
+    limiter
+        .check(&ip, std::time::Instant::now())
+        .map_err(|wait| crate::error::AppError::TooManyRequests { retry_after_secs: wait.as_secs().max(1) })
 }

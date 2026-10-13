@@ -27,6 +27,15 @@ enum Command {
     Migrate,
     /// Вывести документ OpenAPI (для генерации типов фронтенда).
     Openapi,
+    /// Создать суперпользователя (или выдать роль существующему) и вывести ссылку для пароля.
+    CreateSuperuser {
+        /// Email учётной записи.
+        #[arg(long)]
+        email: String,
+        /// Отображаемое имя для новой учётной записи.
+        #[arg(long, default_value = "Администратор")]
+        name: String,
+    },
 }
 
 pub(crate) async fn run() -> anyhow::Result<()> {
@@ -40,6 +49,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         Command::Serve => serve(config).await,
         Command::Migrate => database::migrate(&config).await,
         Command::Openapi => print_openapi(),
+        Command::CreateSuperuser { email, name } => create_superuser(config, &email, &name).await,
     }
 }
 
@@ -47,6 +57,21 @@ fn print_openapi() -> anyhow::Result<()> {
     use std::io::Write as _;
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{}", http::openapi_json()?)?;
+    Ok(())
+}
+
+async fn create_superuser(config: Config, email: &str, name: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    database::migrate(&config).await?;
+    let db = database::connect(&config).await?;
+    let state = AppState::new(config, db)?;
+    let link = crate::admin::bootstrap_superuser(&state, email, name).await?;
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "Суперпользователь: {email}")?;
+    match link {
+        Some(url) => writeln!(stdout, "Задайте пароль по ссылке (действует 24 часа):\n{url}")?,
+        None => writeln!(stdout, "У учётной записи уже есть пароль — роль выдана.")?,
+    }
     Ok(())
 }
 

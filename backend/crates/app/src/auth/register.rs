@@ -17,7 +17,7 @@ use crate::auth::session::{self, ClientMeta, CurrentUser};
 use crate::error::{ApiResult, AppError};
 use crate::http::extract::ClientIp;
 use crate::mail::{self, Email};
-use crate::state::AppState;
+use crate::state::{AppState, throttle};
 use crate::tokens;
 
 /// Данные регистрации.
@@ -40,9 +40,13 @@ pub(crate) async fn register(
     headers: HeaderMap,
     Json(request): Json<RegisterRequest>,
 ) -> ApiResult<Response> {
+    throttle(&state.limits.register, ip)?;
     let email = account::normalize_email(&request.email)?;
     let name = account::normalize_name(&request.display_name)?;
     password::check_strength(&request.password).map_err(|weak| AppError::BadRequest(weak.to_string()))?;
+    if account::email_taken(&state.db, &email).await? {
+        return Err(AppError::Conflict("Этот email уже зарегистрирован. Войдите или восстановите пароль.".to_owned()));
+    }
     let hash = state.hasher.hash(request.password).await?;
     let mut tx = state.db.begin().await?;
     let trusted_link = match &request.trusted_token {
@@ -51,7 +55,7 @@ pub(crate) async fn register(
     };
     let fields = Fields { email: &email, name: &name, hash: &hash, trusted_link };
     let user_id = create_account(&state, &mut tx, &fields, ip).await?;
-    let cookie = session::start(&mut *tx, user_id, &ClientMeta::new(ip, &headers)).await?;
+    let cookie = session::start(&mut *tx, user_id, &ClientMeta::new(&state, ip, &headers)).await?;
     let user = session::load_user(&mut *tx, user_id, Uuid::nil()).await?;
     tx.commit().await?;
     state.jobs_wake.notify_one();

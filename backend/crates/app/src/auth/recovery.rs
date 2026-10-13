@@ -15,7 +15,10 @@ use crate::auth::session::{self, CurrentUser};
 use crate::error::{ApiResult, AppError};
 use crate::http::extract::ClientIp;
 use crate::mail::{self, Email};
-use crate::state::AppState;
+use crate::state::{AppState, throttle};
+
+/// Не чаще одного письма одного назначения пользователю за минуту.
+const MAIL_COOLDOWN: time::Duration = time::Duration::minutes(1);
 
 /// Токен из ссылки.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -44,8 +47,14 @@ pub(crate) async fn verify_email(
 
 /// Отправляет письмо подтверждения ещё раз.
 #[utoipa::path(post, path = "/api/auth/verify-email/resend", tag = "auth", responses((status = 202)))]
-pub(crate) async fn resend_verification(State(state): State<AppState>, user: CurrentUser) -> ApiResult<StatusCode> {
-    if user.email_verified {
+pub(crate) async fn resend_verification(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    user: CurrentUser,
+) -> ApiResult<StatusCode> {
+    throttle(&state.limits.mail, ip)?;
+    let since = state.clock.now() - MAIL_COOLDOWN;
+    if user.email_verified || onetime::issued_recently(&state.db, Purpose::VerifyEmail, user.id, since).await? {
         return Ok(StatusCode::ACCEPTED);
     }
     let mut tx = state.db.begin().await?;
@@ -66,11 +75,20 @@ pub(crate) struct ForgotRequest {
     responses((status = 202)))]
 pub(crate) async fn forgot_password(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(request): Json<ForgotRequest>,
 ) -> ApiResult<StatusCode> {
-    let Some(row) = account::find_for_login(&state.db, request.email.trim()).await? else {
+    throttle(&state.limits.mail, ip)?;
+    let Ok(email) = account::normalize_email(&request.email) else {
         return Ok(StatusCode::ACCEPTED);
     };
+    let Some(row) = account::find_for_login(&state.db, &email).await? else {
+        return Ok(StatusCode::ACCEPTED);
+    };
+    let since = state.clock.now() - MAIL_COOLDOWN;
+    if onetime::issued_recently(&state.db, Purpose::ResetPassword, row.id, since).await? {
+        return Ok(StatusCode::ACCEPTED);
+    }
     let mut tx = state.db.begin().await?;
     let token = onetime::issue(&mut *tx, Purpose::ResetPassword, row.id, state.clock.now()).await?;
     let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1").bind(row.id).fetch_one(&mut *tx).await?;
@@ -95,10 +113,12 @@ pub(crate) async fn reset_password(
     ClientIp(ip): ClientIp,
     Json(request): Json<ResetRequest>,
 ) -> ApiResult<StatusCode> {
+    throttle(&state.limits.login, ip)?;
     password::check_strength(&request.password).map_err(|weak| AppError::BadRequest(weak.to_string()))?;
+    let purposes = [Purpose::ResetPassword, Purpose::SetPassword];
+    onetime::ensure_usable(&state.db, &purposes, &request.token, state.clock.now()).await?;
     let hash = state.hasher.hash(request.password).await?;
     let mut tx = state.db.begin().await?;
-    let purposes = [Purpose::ResetPassword, Purpose::SetPassword];
     let user_id = onetime::consume(&mut tx, &purposes, &request.token, state.clock.now()).await?;
     account::set_password(&mut *tx, user_id, &hash).await?;
     session::revoke_all_except(&mut *tx, user_id, None).await?;

@@ -74,7 +74,7 @@ const SESSION_QUERY: &str = "
     JOIN users u ON u.id = s.user_id
     LEFT JOIN user_roles r ON r.user_id = u.id
     WHERE s.token_hash = $1
-    GROUP BY s.id, u.id";
+    GROUP BY s.token_hash, u.id";
 
 /// Пользователь по cookie сессии; `None`, если сессии нет, она истекла или аккаунт заблокирован.
 ///
@@ -132,15 +132,16 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 pub(crate) struct ClientMeta {
     pub ip: IpAddr,
     pub user_agent: Option<String>,
+    pub now: OffsetDateTime,
 }
 
 impl ClientMeta {
-    pub(crate) fn new(ip: IpAddr, headers: &HeaderMap) -> Self {
+    pub(crate) fn new(state: &AppState, ip: IpAddr, headers: &HeaderMap) -> Self {
         let user_agent = headers
             .get(header::USER_AGENT)
             .and_then(|agent| agent.to_str().ok())
             .map(|agent| agent.chars().take(400).collect());
-        Self { ip, user_agent }
+        Self { ip, user_agent, now: state.clock.now() }
     }
 }
 
@@ -153,14 +154,17 @@ pub(crate) async fn start<'conn>(
     meta: &ClientMeta,
 ) -> ApiResult<HeaderValue> {
     let token = tokens::issue();
-    let _inserted =
-        sqlx::query("INSERT INTO sessions (token_hash, user_id, user_agent, ip) VALUES ($1, $2, $3, $4)")
-            .bind(&token.hash)
-            .bind(user_id)
-            .bind(&meta.user_agent)
-            .bind(meta.ip)
-            .execute(executor)
-            .await?;
+    let _inserted = sqlx::query(
+        "INSERT INTO sessions (token_hash, user_id, user_agent, ip, created_at, last_seen_at)
+         VALUES ($1, $2, $3, $4, $5, $5)",
+    )
+    .bind(&token.hash)
+    .bind(user_id)
+    .bind(&meta.user_agent)
+    .bind(meta.ip)
+    .bind(meta.now)
+    .execute(executor)
+    .await?;
     let max_age = IDLE_DAYS * 24 * 3600;
     HeaderValue::from_str(&format!(
         "{COOKIE_NAME}={}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={max_age}",

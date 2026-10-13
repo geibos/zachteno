@@ -103,6 +103,7 @@ dependencies = [
  "futures",
  "hex",
  "hmac",
+ "http-body-util",
  "image",
  "ipnet",
  "lettre",

@@ -1,5 +1,7 @@
 //! «Зачтено» — HTTP-сервер и служебные команды сервиса тестирования студентов.
 
+mod access;
+mod admin;
 mod audit;
 mod auth;
 mod cli;
@@ -13,6 +15,8 @@ mod mail;
 mod ops;
 mod secret;
 mod state;
+#[cfg(test)]
+mod testing;
 mod tokens;
 
 #[tokio::main]

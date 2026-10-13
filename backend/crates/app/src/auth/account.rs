@@ -14,8 +14,6 @@ pub(crate) struct LoginRow {
     pub password_hash: Option<String>,
     pub pepper_version: Option<i32>,
     pub blocked: bool,
-    pub failed_logins: i32,
-    pub last_failed_login_at: Option<time::OffsetDateTime>,
 }
 
 impl LoginRow {
@@ -35,8 +33,7 @@ pub(crate) async fn find_for_login<'conn>(
     email: &str,
 ) -> Result<Option<LoginRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, display_name, password_hash, pepper_version, blocked_at IS NOT NULL AS blocked,
-                failed_logins, last_failed_login_at
+        "SELECT id, display_name, password_hash, pepper_version, blocked_at IS NOT NULL AS blocked
          FROM users WHERE email_lower = lower($1)",
     )
     .bind(email)
@@ -98,10 +95,13 @@ pub(crate) async fn set_password<'conn>(
     Ok(())
 }
 
-/// Нормализует и проверяет email: обрезка пробелов, одна `@`, точка в домене, до 254 символов.
+/// Нормализует и проверяет email: обрезка пробелов, только ASCII, одна `@`, точка в домене,
+/// до 254 символов. Одна и та же функция для регистрации, входа и восстановления, поэтому
+/// сравнение без учёта регистра (`lower()` в базе) не расходится с проверкой в коде.
 pub(crate) fn normalize_email(raw: &str) -> Result<String, AppError> {
     let email = raw.trim();
     let valid = email.len() <= 254
+        && email.is_ascii()
         && email.split_once('@').is_some_and(|(local, domain)| {
             !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.contains('@')
         })
@@ -118,4 +118,14 @@ pub(crate) fn normalize_name(raw: &str) -> Result<String, AppError> {
     } else {
         Err(AppError::BadRequest("Имя должно быть от 1 до 200 символов".to_owned()))
     }
+}
+
+/// Занят ли email (дешёвая проверка до дорогого хеширования; гонку ловит UNIQUE).
+///
+/// cancel-safe: yes — только чтение.
+pub(crate) async fn email_taken<'conn>(executor: impl PgExecutor<'conn>, email: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE email_lower = lower($1))")
+        .bind(email)
+        .fetch_one(executor)
+        .await
 }

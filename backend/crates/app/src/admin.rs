@@ -1,0 +1,52 @@
+//! Раздел суперпользователя (spec `access-control`, «Права суперпользователя»).
+
+mod trusted;
+mod users;
+
+#[cfg(test)]
+mod tests;
+
+pub(crate) use users::grant_role;
+
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
+
+use crate::state::AppState;
+
+/// Маршруты администрирования.
+pub(crate) fn routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(users::list_users))
+        .routes(routes!(users::set_role))
+        .routes(routes!(users::set_blocked))
+        .routes(routes!(trusted::create_link, trusted::list_links))
+        .routes(routes!(trusted::list_uses))
+}
+
+/// Создаёт суперпользователя или выдаёт роль; для учётки без пароля — ссылка на задание пароля.
+///
+/// cancel-safe: yes — всё в одной транзакции.
+pub(crate) async fn bootstrap_superuser(state: &AppState, raw_email: &str, name: &str) -> anyhow::Result<Option<String>> {
+    use crate::auth::account::{self, NewUser};
+    use crate::auth::onetime::{self, Purpose};
+    let email = account::normalize_email(raw_email).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let mut tx = state.db.begin().await?;
+    let existing = account::find_for_login(&mut *tx, &email).await?;
+    let (user_id, has_password) = match existing {
+        Some(row) => (row.id, row.password_hash.is_some()),
+        None => {
+            let new_user = NewUser { email: &email, display_name: name, password: None, email_verified: true, trusted: true };
+            (account::create(&mut *tx, &new_user).await.map_err(|error| anyhow::anyhow!("{error}"))?, false)
+        }
+    };
+    grant_role(&mut tx, user_id, "superuser", None).await.map_err(|error| anyhow::anyhow!("{error}"))?;
+    crate::audit::AuditEntry::new("role.grant", "user").on(user_id).with(serde_json::json!({ "role": "superuser", "via": "cli" })).record(&mut *tx).await?;
+    let link = if has_password {
+        None
+    } else {
+        let token = onetime::issue(&mut *tx, Purpose::SetPassword, user_id, state.clock.now()).await?;
+        Some(format!("{}/reset-password?token={token}", state.config.http.public_url))
+    };
+    tx.commit().await?;
+    Ok(link)
+}

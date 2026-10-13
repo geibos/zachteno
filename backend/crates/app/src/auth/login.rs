@@ -8,7 +8,6 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{AppendHeaders, IntoResponse as _, Response};
 use serde::{Deserialize, Serialize};
-use time::{Duration, OffsetDateTime};
 use utoipa::ToSchema;
 
 use crate::audit::AuditEntry;
@@ -17,12 +16,7 @@ use crate::auth::password::Verification;
 use crate::auth::session::{self, ClientMeta, CurrentUser};
 use crate::error::{ApiResult, AppError};
 use crate::http::extract::{ClientIp, MaybeUser};
-use crate::state::AppState;
-
-/// После стольких неудач подряд включается нарастающая пауза.
-const FREE_FAILURES: i32 = 5;
-/// Верхняя граница паузы.
-const MAX_BACKOFF_SECONDS: i64 = 900;
+use crate::state::{AppState, throttle};
 
 /// Данные входа.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -32,6 +26,8 @@ pub(crate) struct LoginRequest {
 }
 
 /// Вход по email и паролю.
+///
+/// Ответ и пауза не зависят от того, существует ли учётная запись.
 #[utoipa::path(post, path = "/api/auth/login", tag = "auth", request_body = LoginRequest,
     responses((status = 200, body = CurrentUser), (status = 401), (status = 429)))]
 pub(crate) async fn login(
@@ -40,80 +36,50 @@ pub(crate) async fn login(
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> ApiResult<Response> {
+    throttle(&state.limits.login, ip)?;
+    let email = account::normalize_email(&request.email).map_err(|_| AppError::InvalidCredentials)?;
+    let key = email.to_ascii_lowercase();
     state
-        .login_limiter
-        .check(ip, Instant::now())
+        .login_failures
+        .check(&key, Instant::now())
         .map_err(|wait| AppError::TooManyRequests { retry_after_secs: wait.as_secs().max(1) })?;
-    let Some(row) = account::find_for_login(&state.db, request.email.trim()).await? else {
-        let _ = state.hasher.hash(request.password).await?;
+    let row = account::find_for_login(&state.db, &email).await?;
+    let outcome = check_password(&state, row.as_ref(), request.password.clone()).await?;
+    let Some(row) = row.filter(|_| outcome != Verification::Invalid) else {
+        let failures = state.login_failures.record_failure(&key, Instant::now());
+        audit_failure(&state, ip, failures).await?;
         return Err(AppError::InvalidCredentials);
     };
-    check_backoff(&row, state.clock.now())?;
     if row.blocked {
         return Err(AppError::Forbidden);
     }
-    let outcome = match row.stored_hash() {
-        Some(stored) => state.hasher.verify(request.password.clone(), stored).await?,
-        None => Verification::Invalid,
-    };
-    succeed_or_fail(&state, &row, (outcome, request.password), ClientMeta::new(ip, &headers)).await
-}
-
-fn check_backoff(row: &LoginRow, now: OffsetDateTime) -> ApiResult<()> {
-    let excess = row.failed_logins.saturating_sub(FREE_FAILURES);
-    let (Some(last_failure), true) = (row.last_failed_login_at, excess >= 0) else {
-        return Ok(());
-    };
-    let exponent = u32::try_from(excess.min(10)).unwrap_or(10);
-    let pause = Duration::seconds(2_i64.saturating_pow(exponent).min(MAX_BACKOFF_SECONDS));
-    let allowed_at = last_failure + pause;
-    if now < allowed_at {
-        let wait = u64::try_from((allowed_at - now).whole_seconds()).unwrap_or(1).max(1);
-        return Err(AppError::TooManyRequests { retry_after_secs: wait });
+    state.login_failures.reset(&key);
+    if outcome == Verification::ValidNeedsRehash {
+        let fresh = state.hasher.hash(request.password).await?;
+        account::set_password(&state.db, row.id, &fresh).await?;
     }
-    Ok(())
+    open_session(&state, &row, &ClientMeta::new(&state, ip, &headers)).await
 }
 
-async fn succeed_or_fail(
-    state: &AppState,
-    row: &LoginRow,
-    (outcome, password): (Verification, String),
-    meta: ClientMeta,
-) -> ApiResult<Response> {
-    match outcome {
-        Verification::Invalid => {
-            record_failure(state, row, meta.ip).await?;
-            Err(AppError::InvalidCredentials)
+/// Проверяет пароль; для несуществующей учётной записи тратит столько же времени.
+async fn check_password(state: &AppState, row: Option<&LoginRow>, password: String) -> ApiResult<Verification> {
+    match row.and_then(LoginRow::stored_hash) {
+        Some(stored) => Ok(state.hasher.verify(password, stored).await?),
+        None => {
+            let _decoy = state.hasher.hash(password).await?;
+            Ok(Verification::Invalid)
         }
-        Verification::ValidNeedsRehash => {
-            let fresh = state.hasher.hash(password).await?;
-            account::set_password(&state.db, row.id, &fresh).await?;
-            open_session(state, row, &meta).await
-        }
-        Verification::Valid => open_session(state, row, &meta).await,
     }
 }
 
-async fn record_failure(state: &AppState, row: &LoginRow, ip: IpAddr) -> ApiResult<()> {
-    let mut tx = state.db.begin().await?;
-    let _updated = sqlx::query(
-        "UPDATE users SET failed_logins = failed_logins + 1, last_failed_login_at = $2 WHERE id = $1",
-    )
-    .bind(row.id)
-    .bind(state.clock.now())
-    .execute(&mut *tx)
-    .await?;
-    AuditEntry::new("auth.login_failed", "user").by(None, Some(ip)).on(row.id).record(&mut *tx).await?;
-    tx.commit().await?;
+async fn audit_failure(state: &AppState, ip: IpAddr, failures: u32) -> ApiResult<()> {
+    let details = serde_json::json!({ "consecutive_failures": failures });
+    AuditEntry::new("auth.login_failed", "user").by(None, Some(ip)).with(details).record(&state.db).await?;
     Ok(())
 }
 
 async fn open_session(state: &AppState, row: &LoginRow, meta: &ClientMeta) -> ApiResult<Response> {
     let mut tx = state.db.begin().await?;
-    let _reset = sqlx::query("UPDATE users SET failed_logins = 0, last_failed_login_at = NULL WHERE id = $1")
-        .bind(row.id)
-        .execute(&mut *tx)
-        .await?;
     let cookie = session::start(&mut *tx, row.id, meta).await?;
     AuditEntry::new("auth.login", "user").by(Some(row.id), Some(meta.ip)).on(row.id).record(&mut *tx).await?;
     let user = session::load_user(&mut *tx, row.id, uuid::Uuid::nil()).await?;

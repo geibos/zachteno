@@ -8,6 +8,8 @@ mod profile;
 mod recovery;
 pub(crate) mod register;
 pub(crate) mod session;
+#[cfg(test)]
+mod tests;
 
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
