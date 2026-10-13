@@ -63,6 +63,7 @@ pub(crate) fn state(db: PgPool) -> AppState {
         limits: Arc::new(Limits::relaxed()),
         login_failures: Arc::new(LoginFailures::default()),
         http_client: reqwest::Client::new(),
+        blobs: Arc::new(object_store::memory::InMemory::new()),
     }
 }
 

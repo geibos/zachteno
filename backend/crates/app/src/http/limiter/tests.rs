@@ -18,9 +18,9 @@ fn failures_trigger_backoff_after_five() {
     let failures = LoginFailures::default();
     let now = Instant::now();
     for _ in 0..FREE_FAILURES {
-        let _count = failures.record_failure("a@b.c", now);
+        assert!(failures.try_begin("a@b.c", now).is_ok(), "первые пять");
     }
-    assert!(failures.check("a@b.c", now).is_err(), "шестая попытка ждёт");
+    assert!(failures.try_begin("a@b.c", now).is_err(), "шестая попытка ждёт");
     failures.reset("a@b.c");
-    assert!(failures.check("a@b.c", now).is_ok(), "после успеха сброс");
+    assert!(failures.try_begin("a@b.c", now).is_ok(), "после успеха сброс");
 }

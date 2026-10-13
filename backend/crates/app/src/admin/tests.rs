@@ -80,3 +80,14 @@ async fn bootstrap_creates_superuser_with_password_link(db: PgPool) {
     assert_eq!(status, StatusCode::OK, "вход");
     assert_eq!(user["roles"]["superuser"], true, "роль суперпользователя");
 }
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn bootstrap_does_not_hand_role_to_squatter(db: PgPool) {
+    let state = testing::state(db);
+    let (mut squatter, _id) = testing::register(&state, "root@example.com").await;
+    let link = crate::admin::bootstrap_superuser(&state, "root@example.com", "Админ").await.unwrap();
+    assert!(link.is_some(), "неподтверждённая учётка получает только ссылку на новый пароль");
+    assert!(squatter.get("/api/auth/me").await.1["user"].is_null(), "сессии захватчика завершены");
+    let login = json!({ "email": "root@example.com", "password": PASSWORD });
+    assert_eq!(Client::new(&state).post("/api/auth/login", login).await.0, StatusCode::UNAUTHORIZED, "старый пароль сброшен");
+}

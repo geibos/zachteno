@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use tokio::sync::Notify;
 
 use crate::auth::password::Hasher;
+use crate::blobs::{self, Blobs};
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::http::limiter::{Limiter, LoginFailures};
@@ -24,14 +25,18 @@ pub(crate) struct AppState {
     /// Неудачные входы по email.
     pub login_failures: Arc<LoginFailures>,
     pub http_client: reqwest::Client,
+    /// Хранилище картинок.
+    pub blobs: Blobs,
 }
 
 impl AppState {
     /// Собирает состояние из конфигурации и пула.
     pub(crate) fn new(config: Config, db: PgPool) -> anyhow::Result<Self> {
         let concurrency = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+        let store = blobs::connect(&config.storage)?;
         Ok(Self {
             db,
+            blobs: store,
             hasher: Hasher::new(config.secrets.peppers.clone(), concurrency),
             config: Arc::new(config),
             clock: Clock::System,

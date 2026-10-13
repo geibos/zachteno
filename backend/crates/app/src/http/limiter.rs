@@ -45,26 +45,32 @@ pub(crate) struct LoginFailures {
 
 /// После стольких неудач подряд включается нарастающая пауза.
 pub(crate) const FREE_FAILURES: u32 = 5;
+/// Первая пауза после серии неудач; дальше удваивается.
+const BASE_BACKOFF: Duration = Duration::from_secs(30);
 /// Верхняя граница паузы.
 const MAX_BACKOFF: Duration = Duration::from_secs(900);
 
 impl LoginFailures {
-    /// `Err(wait)`, если для адреса действует пауза.
-    pub(crate) fn check(&self, email: &str, now: Instant) -> Result<(), Duration> {
-        let failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some((count, last)) = failures.get(email).copied() else { return Ok(()) };
-        let Some(excess) = count.checked_sub(FREE_FAILURES) else { return Ok(()) };
-        let pause = Duration::from_secs(2_u64.saturating_pow(excess.min(10))).min(MAX_BACKOFF);
-        let allowed_at = last + pause;
-        if allowed_at > now { Err(allowed_at.saturating_duration_since(now)) } else { Ok(()) }
-    }
-
-    /// Учитывает неудачу; возвращает число неудач подряд.
-    pub(crate) fn record_failure(&self, email: &str, now: Instant) -> u32 {
+    /// Атомарно резервирует попытку входа: при действующей паузе — `Err(wait)`,
+    /// иначе попытка сразу считается неудачной и снимается только `reset` после успеха.
+    /// Так параллельные запросы не обходят счётчик (проверка и учёт под одной блокировкой).
+    pub(crate) fn try_begin(&self, email: &str, now: Instant) -> Result<(), Duration> {
         let mut failures = self.failures.lock().unwrap_or_else(PoisonError::into_inner);
         let slot = failures.entry(email.to_owned()).or_insert((0, now));
+        if let Some(excess) = slot.0.checked_sub(FREE_FAILURES) {
+            let pause = BASE_BACKOFF.saturating_mul(2_u32.saturating_pow(excess.min(10))).min(MAX_BACKOFF);
+            let allowed_at = slot.1 + pause;
+            if allowed_at > now {
+                return Err(allowed_at.saturating_duration_since(now));
+            }
+        }
         *slot = (slot.0.saturating_add(1), now);
-        slot.0
+        Ok(())
+    }
+
+    /// Число неудач подряд для адреса.
+    pub(crate) fn count(&self, email: &str) -> u32 {
+        self.failures.lock().unwrap_or_else(PoisonError::into_inner).get(email).map_or(0, |slot| slot.0)
     }
 
     /// Сбрасывает счётчик после успешного входа.

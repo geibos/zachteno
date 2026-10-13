@@ -3,6 +3,7 @@
 mod access;
 mod admin;
 mod audit;
+mod blobs;
 mod auth;
 mod cli;
 mod clock;

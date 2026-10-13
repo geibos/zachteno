@@ -41,13 +41,12 @@ pub(crate) async fn login(
     let key = email.to_ascii_lowercase();
     state
         .login_failures
-        .check(&key, Instant::now())
+        .try_begin(&key, Instant::now())
         .map_err(|wait| AppError::TooManyRequests { retry_after_secs: wait.as_secs().max(1) })?;
     let row = account::find_for_login(&state.db, &email).await?;
     let outcome = check_password(&state, row.as_ref(), request.password.clone()).await?;
     let Some(row) = row.filter(|_| outcome != Verification::Invalid) else {
-        let failures = state.login_failures.record_failure(&key, Instant::now());
-        audit_failure(&state, ip, failures).await?;
+        audit_failure(&state, ip, state.login_failures.count(&key)).await?;
         return Err(AppError::InvalidCredentials);
     };
     if row.blocked {

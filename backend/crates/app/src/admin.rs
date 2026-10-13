@@ -33,7 +33,7 @@ pub(crate) async fn bootstrap_superuser(state: &AppState, raw_email: &str, name:
     let mut tx = state.db.begin().await?;
     let existing = account::find_for_login(&mut *tx, &email).await?;
     let (user_id, has_password) = match existing {
-        Some(row) => (row.id, row.password_hash.is_some()),
+        Some(row) => (row.id, secure_existing(&mut tx, row.id).await?),
         None => {
             let new_user = NewUser { email: &email, display_name: name, password: None, email_verified: true, trusted: true };
             (account::create(&mut *tx, &new_user).await.map_err(|error| anyhow::anyhow!("{error}"))?, false)
@@ -49,4 +49,29 @@ pub(crate) async fn bootstrap_superuser(state: &AppState, raw_email: &str, name:
     };
     tx.commit().await?;
     Ok(link)
+}
+
+/// Учётку с неподтверждённым email мог заранее завести кто угодно: прежде чем выдать роль,
+/// сбрасываем её пароль, сессии и внешние входы, а пароль задаётся только по ссылке из CLI.
+/// Возвращает, остался ли у учётки пароль (то есть email был подтверждён владельцем).
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn secure_existing(tx: &mut sqlx::PgConnection, user_id: uuid::Uuid) -> anyhow::Result<bool> {
+    let verified_with_password: bool = sqlx::query_scalar(
+        "SELECT email_verified_at IS NOT NULL AND password_hash IS NOT NULL FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if verified_with_password {
+        return Ok(true);
+    }
+    for statement in [
+        "UPDATE users SET password_hash = NULL, pepper_version = NULL, email_verified_at = now() WHERE id = $1",
+        "DELETE FROM sessions WHERE user_id = $1",
+        "DELETE FROM external_identities WHERE user_id = $1",
+    ] {
+        let _done = sqlx::query(statement).bind(user_id).execute(&mut *tx).await?;
+    }
+    Ok(false)
 }
