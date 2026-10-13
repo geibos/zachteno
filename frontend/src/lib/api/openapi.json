@@ -467,7 +467,7 @@
           "attempts"
         ],
         "summary": "Сдаёт попытку.",
-        "operationId": "submit",
+        "operationId": "submit_attempt",
         "parameters": [
           {
             "name": "attempt_id",
@@ -681,7 +681,7 @@
           "auth"
         ],
         "summary": "Начинает вход: сохраняет `state` и PKCE и уводит на страницу Яндекса.",
-        "operationId": "start",
+        "operationId": "yandex_start",
         "parameters": [
           {
             "name": "next",
@@ -1054,7 +1054,12 @@
             "in": "query",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/AttemptsMode"
+              "type": "string",
+              "description": "Какие попытки показывать.",
+              "enum": [
+                "final",
+                "all"
+              ]
             }
           }
         ],
@@ -1102,7 +1107,12 @@
             "in": "query",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/AttemptsMode"
+              "type": "string",
+              "description": "Какие попытки показывать.",
+              "enum": [
+                "final",
+                "all"
+              ]
             }
           }
         ],
@@ -1544,7 +1554,7 @@
           "antifraud"
         ],
         "summary": "Принимает сигналы текущего пользователя и ставит пересчёт его связей.",
-        "operationId": "submit",
+        "operationId": "submit_signals",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1957,7 +1967,7 @@
           "attempts"
         ],
         "summary": "Начинает попытку или продолжает незавершённую.",
-        "operationId": "start",
+        "operationId": "start_attempt",
         "parameters": [
           {
             "name": "test_id",
@@ -2197,7 +2207,12 @@
             "in": "query",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/AttemptsMode"
+              "type": "string",
+              "description": "Какие попытки показывать.",
+              "enum": [
+                "final",
+                "all"
+              ]
             }
           }
         ],
@@ -2245,7 +2260,12 @@
             "in": "query",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/AttemptsMode"
+              "type": "string",
+              "description": "Какие попытки показывать.",
+              "enum": [
+                "final",
+                "all"
+              ]
             }
           }
         ],
@@ -2289,7 +2309,12 @@
             "in": "query",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/AttemptsMode"
+              "type": "string",
+              "description": "Какие попытки показывать.",
+              "enum": [
+                "final",
+                "all"
+              ]
             }
           }
         ],

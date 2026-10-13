@@ -227,8 +227,8 @@ async fn insert_option(
     (option, penalty): (&OptionInput, Decimal),
 ) -> ApiResult<()> {
     let _inserted = sqlx::query(
-        "INSERT INTO options (question_id, position, body, image_id, image_alt, is_correct, penalty, pinned)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO options (question_id, position, body, image_id, image_alt, is_correct, penalty, pinned, penalty_custom)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(question_id)
     .bind(position)
@@ -238,6 +238,7 @@ async fn insert_option(
     .bind(option.is_correct)
     .bind(penalty)
     .bind(option.pinned)
+    .bind(option.penalty.is_some() && !option.is_correct)
     .execute(&mut *tx)
     .await?;
     Ok(())

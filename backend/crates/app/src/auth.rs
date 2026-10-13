@@ -2,6 +2,7 @@
 
 pub(crate) mod account;
 mod login;
+mod oauth;
 pub(crate) mod onetime;
 pub(crate) mod password;
 mod profile;
@@ -30,4 +31,8 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(profile::change_password))
         .routes(routes!(profile::list_sessions))
         .routes(routes!(profile::revoke_session))
+        .routes(routes!(profile::list_identities))
+        .routes(routes!(profile::unlink_identity))
+        .routes(routes!(oauth::start))
+        .routes(routes!(oauth::callback))
 }

@@ -1,13 +1,14 @@
 //! Срок попытки и правила навигации (spec `test-taking`, `streams-enrollment`).
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use time::{Duration, OffsetDateTime};
 
 #[cfg(test)]
 mod tests;
 
 /// Режим навигации по вопросам.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Navigation {
     /// Можно возвращаться и пропускать.

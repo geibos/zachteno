@@ -100,3 +100,49 @@ pub(crate) async fn revoke_session(
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// Привязанный внешний аккаунт.
+#[derive(Debug, Serialize, FromRow, ToSchema)]
+pub(crate) struct Identity {
+    pub provider: String,
+    pub email: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// Мои внешние аккаунты.
+#[utoipa::path(get, path = "/api/profile/identities", tag = "profile", responses((status = 200, body = [Identity])))]
+pub(crate) async fn list_identities(State(state): State<AppState>, user: CurrentUser) -> ApiResult<Json<Vec<Identity>>> {
+    let identities = sqlx::query_as("SELECT provider, email, created_at FROM external_identities WHERE user_id = $1 ORDER BY created_at")
+        .bind(user.id)
+        .fetch_all(&state.db)
+        .await?;
+    Ok(Json(identities))
+}
+
+/// Отвязывает внешний аккаунт; последний способ входа удалить нельзя.
+#[utoipa::path(delete, path = "/api/profile/identities/{provider}", tag = "profile", params(("provider" = String, Path)),
+    responses((status = 204), (status = 409)))]
+pub(crate) async fn unlink_identity(
+    State(state): State<AppState>,
+    (user, ClientIp(ip)): (CurrentUser, ClientIp),
+    Path(provider): Path<String>,
+) -> ApiResult<StatusCode> {
+    let mut tx = state.db.begin().await?;
+    let others: i64 = sqlx::query_scalar("SELECT count(*) FROM external_identities WHERE user_id = $1 AND provider <> $2")
+        .bind(user.id)
+        .bind(&provider)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !user.has_password && others == 0 {
+        return Err(AppError::Conflict("Это единственный способ входа — сначала задайте пароль".to_owned()));
+    }
+    let _deleted = sqlx::query("DELETE FROM external_identities WHERE user_id = $1 AND provider = $2")
+        .bind(user.id)
+        .bind(&provider)
+        .execute(&mut *tx)
+        .await?;
+    AuditEntry::new("auth.identity_unlink", "user").by(Some(user.id), Some(ip)).on(user.id).with(serde_json::json!({ "provider": provider })).record(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}

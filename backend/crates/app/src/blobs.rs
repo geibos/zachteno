@@ -22,7 +22,7 @@ pub(crate) type Blobs = Arc<dyn ObjectStore>;
 /// Наибольший размер загружаемого файла.
 pub(crate) const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 /// Наибольшая сторона картинки в пикселях (защита от «бомб»).
-const MAX_SIDE: u32 = 8000;
+const MAX_SIDE: u32 = 4096;
 /// Наибольшая сторона кадра анимации.
 const MAX_GIF_SIDE: u32 = 2000;
 /// Не больше стольких кадров анимации.
@@ -97,7 +97,7 @@ fn limits(side: u32) -> Limits {
     let mut limits = Limits::default();
     limits.max_image_width = Some(side);
     limits.max_image_height = Some(side);
-    limits.max_alloc = Some(256 * 1024 * 1024);
+    limits.max_alloc = Some(128 * 1024 * 1024);
     limits
 }
 

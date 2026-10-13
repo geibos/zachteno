@@ -2,6 +2,8 @@
 
 mod access;
 mod admin;
+mod antifraud;
+mod attempts;
 mod audit;
 mod blobs;
 mod auth;
@@ -15,8 +17,11 @@ mod http;
 mod jobs;
 mod mail;
 mod ops;
+mod reporting;
 mod secret;
 mod state;
+mod streams;
+mod sweeper;
 #[cfg(test)]
 mod testing;
 mod tokens;

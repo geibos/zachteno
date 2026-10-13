@@ -103,10 +103,19 @@ pub(crate) async fn logout(State(state): State<AppState>, MaybeUser(user): Maybe
 pub(crate) struct MeResponse {
     pub user: Option<CurrentUser>,
     pub yandex_enabled: bool,
+    /// Преподаёт ли пользователь хотя бы на одном курсе.
+    pub teaches: bool,
 }
 
 /// Текущий пользователь (или `null`).
 #[utoipa::path(get, path = "/api/auth/me", tag = "auth", responses((status = 200, body = MeResponse)))]
-pub(crate) async fn me(State(state): State<AppState>, MaybeUser(user): MaybeUser) -> Json<MeResponse> {
-    Json(MeResponse { user, yandex_enabled: state.config.yandex.is_some() })
+pub(crate) async fn me(State(state): State<AppState>, MaybeUser(user): MaybeUser) -> ApiResult<Json<MeResponse>> {
+    let teaches = match &user {
+        Some(current) => sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM course_teachers WHERE user_id = $1)")
+            .bind(current.id)
+            .fetch_one(&state.db)
+            .await?,
+        None => false,
+    };
+    Ok(Json(MeResponse { user, yandex_enabled: state.config.yandex.is_some(), teaches }))
 }

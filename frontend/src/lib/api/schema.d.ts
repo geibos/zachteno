@@ -90,6 +90,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/antifraud/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Отмечает связь как подтверждённую или отклонённую. */
+        post: operations["decide"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/attachments": {
         parameters: {
             query?: never;
@@ -134,6 +151,23 @@ export interface paths {
         get?: never;
         /** Сохраняет ответ (идемпотентно по `client_seq`). */
         put: operations["save_answer"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/attempts/{attempt_id}/details": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ответы попытки по вопросам и хронология её событий. */
+        get: operations["attempt_details"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -202,7 +236,24 @@ export interface paths {
         get?: never;
         put?: never;
         /** Сдаёт попытку. */
-        post: operations["submit"];
+        post: operations["submit_attempt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Аудит-лог: весь — суперпользователю, по своему курсу — методисту-владельцу. */
+        get: operations["list"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -255,6 +306,40 @@ export interface paths {
         };
         /** Текущий пользователь (или `null`). */
         get: operations["me"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/oauth/yandex/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Возврат с Яндекса: проверка `state`, обмен кода, вход или регистрация. */
+        get: operations["callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/oauth/yandex/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Начинает вход: сохраняет `state` и PKCE и уводит на страницу Яндекса. */
+        get: operations["yandex_start"];
         put?: never;
         post?: never;
         delete?: never;
@@ -384,6 +469,23 @@ export interface paths {
         patch: operations["update_course"];
         trace?: never;
     };
+    "/api/courses/{course_id}/antifraud": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Связи участников курса; просмотр записывается в аудит-лог. */
+        get: operations["course_links"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/courses/{course_id}/clone": {
         parameters: {
             query?: never;
@@ -395,6 +497,40 @@ export interface paths {
         put?: never;
         /** Клонирует курс целиком; владелец клона — тот, кто клонирует. */
         post: operations["clone_course"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/courses/{course_id}/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Студенты × тесты: итоговые баллы (пусто — «нет попыток»). */
+        get: operations["course_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/courses/{course_id}/summary.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Сводная таблица курса в CSV. */
+        get: operations["course_csv"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -521,6 +657,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/profile/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Мои внешние аккаунты. */
+        get: operations["list_identities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/profile/identities/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Отвязывает внешний аккаунт; последний способ входа удалить нельзя. */
+        delete: operations["unlink_identity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/profile/password": {
         parameters: {
             query?: never;
@@ -585,6 +755,23 @@ export interface paths {
         post?: never;
         /** Удаляет вопрос. */
         delete: operations["delete_question"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/signals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Принимает сигналы текущего пользователя и ставит пересчёт его связей. */
+        post: operations["submit_signals"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -759,7 +946,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Начинает попытку или продолжает незавершённую. */
-        post: operations["start"];
+        post: operations["start_attempt"];
         delete?: never;
         options?: never;
         head?: never;
@@ -851,6 +1038,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tests/{test_id}/results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Результаты теста для преподавателя и методиста. */
+        get: operations["test_results"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tests/{test_id}/results.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Таблица теста в CSV с теми же фильтрами. */
+        get: operations["test_csv"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tests/{test_id}/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Статистика по вопросам теста. */
+        get: operations["question_stats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tests/{test_id}/windows": {
         parameters: {
             query?: never;
@@ -910,6 +1148,26 @@ export interface components {
         AssignTeacher: {
             email: string;
         };
+        /** @description Детали попытки. */
+        AttemptDetails: {
+            /** Format: uuid */
+            attempt_id: string;
+            cells: components["schemas"]["Cell"][];
+            display_name: string;
+            email: string;
+            events: components["schemas"]["AttemptEvent"][];
+            /** Format: uuid */
+            test_id: string;
+        };
+        /** @description Событие попытки. */
+        AttemptEvent: {
+            /** Format: date-time */
+            at: string;
+            details: Record<string, never>;
+            kind: string;
+            /** Format: uuid */
+            question_id?: string | null;
+        };
         /** @description Попытка для прохождения. */
         AttemptView: {
             answers: components["schemas"]["SavedAnswer"][];
@@ -930,9 +1188,40 @@ export interface components {
             test_id: string;
             title: string;
         };
+        /** @description Запись журнала для просмотра. */
+        AuditRecord: {
+            action: string;
+            /** Format: uuid */
+            actor_id?: string | null;
+            actor_name?: string | null;
+            /** Format: date-time */
+            at: string;
+            /** Format: uuid */
+            course_id?: string | null;
+            details: Record<string, never>;
+            /** Format: int64 */
+            id: number;
+            ip?: string | null;
+            /** Format: uuid */
+            object_id?: string | null;
+            object_type: string;
+        };
         /** @description Заблокировать или разблокировать. */
         BlockChange: {
             blocked: boolean;
+        };
+        /** @description Ячейка вопроса. */
+        Cell: {
+            free_text: boolean;
+            /** @description Был ли вопрос в этой попытке (при случайной выборке — не всегда). */
+            in_attempt: boolean;
+            /** Format: uuid */
+            question_id: string;
+            /** @description Балл; `null` для свободного ответа. */
+            score?: string | null;
+            /** @description Выбранные варианты текстом (картинка без текста — «[картинка]»). */
+            selected: string[];
+            text_answer?: string | null;
         };
         /** @description Смена или первое задание пароля. */
         ChangePasswordRequest: {
@@ -959,6 +1248,15 @@ export interface components {
             /** Format: uuid */
             course_id: string;
         };
+        /** @description Столбец-вопрос. */
+        ColumnHeader: {
+            body: string;
+            free_text: boolean;
+            number: number;
+            /** Format: uuid */
+            question_id: string;
+            weight: string;
+        };
         /** @description Курс целиком: описание, мои права и тесты. */
         CourseDetail: {
             archived: boolean;
@@ -972,6 +1270,12 @@ export interface components {
             owner_name: string;
             tests: components["schemas"]["TestSummary"][];
             title: string;
+        };
+        /** @description Связи участников курса и кластеры. */
+        CourseLinks: {
+            /** @description Группы аккаунтов, связанных на уровне от среднего (без отклонённых связей). */
+            clusters: string[][];
+            links: components["schemas"]["LinkView"][];
         };
         /** @description Изменение курса. */
         CoursePatch: {
@@ -1050,6 +1354,30 @@ export interface components {
             time_limit_minutes?: number | null;
             title: string;
         };
+        /** @description Решение проверяющего. */
+        Decision: {
+            comment?: string;
+            /** Format: uuid */
+            course_id: string;
+            /** @description `confirmed` или `rejected`. */
+            decision: string;
+            /** Format: uuid */
+            user_a: string;
+            /** Format: uuid */
+            user_b: string;
+        };
+        /** @description Основание связи: что совпало и когда (без сырых значений). */
+        Evidence: {
+            /** Format: date-time */
+            at?: string | null;
+            detail: string;
+            kind: components["schemas"]["EvidenceKind"];
+        };
+        /**
+         * @description Вид совпадения, на котором основана связь.
+         * @enum {string}
+         */
+        EvidenceKind: "shared_marker" | "shared_rare_device" | "shared_common_device" | "home_network" | "session_handoff" | "identical_free_text" | "matching_mistakes" | "typing_similarity" | "registration_pattern" | "shared_public_network";
         /**
          * @description Как выбирается итоговый балл из сданных попыток.
          * @enum {string}
@@ -1064,6 +1392,13 @@ export interface components {
          * @enum {string}
          */
         GlobalRole: "superuser" | "methodist";
+        /** @description Привязанный внешний аккаунт. */
+        Identity: {
+            /** Format: date-time */
+            created_at: string;
+            email?: string | null;
+            provider: string;
+        };
         /** @description Картинка, прикреплённая к вопросу или варианту. */
         ImageRef: {
             alt: string;
@@ -1120,6 +1455,26 @@ export interface components {
             stream_id: string;
             stream_name: string;
         };
+        /** @description Связь двух аккаунтов. */
+        LinkView: {
+            comment: string;
+            /** Format: date-time */
+            computed_at: string;
+            /** Format: date-time */
+            decided_at?: string | null;
+            decision?: string | null;
+            evidence: components["schemas"]["Evidence"][];
+            level: string;
+            user_a: components["schemas"]["LinkedUser"];
+            user_b: components["schemas"]["LinkedUser"];
+        };
+        /** @description Участник связи. */
+        LinkedUser: {
+            display_name: string;
+            email: string;
+            /** Format: uuid */
+            id: string;
+        };
         /** @description Данные входа. */
         LoginRequest: {
             email: string;
@@ -1127,6 +1482,8 @@ export interface components {
         };
         /** @description Кто я и что доступно на этом стенде. */
         MeResponse: {
+            /** @description Преподаёт ли пользователь хотя бы на одном курсе. */
+            teaches: boolean;
             user?: components["schemas"]["CurrentUser"] | null;
             yandex_enabled: boolean;
         };
@@ -1180,7 +1537,10 @@ export interface components {
             id: string;
             image?: components["schemas"]["ImageRef"] | null;
             is_correct: boolean;
+            /** @description Действующий штраф (заданный или по умолчанию для режима). */
             penalty: string;
+            /** @description Задан ли штраф явно (иначе берётся по умолчанию и пересчитывается при смене веса). */
+            penalty_custom: boolean;
             pinned: boolean;
         };
         /** @description Вариант ответа от редактора. */
@@ -1193,6 +1553,14 @@ export interface components {
             /** @description Штраф (≤ 0); `null` — по умолчанию для режима оценки. */
             penalty?: string | null;
             pinned?: boolean;
+        };
+        /** @description Частота выбора варианта. */
+        OptionStat: {
+            body: string;
+            chosen: number;
+            is_correct: boolean;
+            /** Format: uuid */
+            option_id: string;
         };
         /** @description Вопрос для редактора. */
         QuestionDetail: {
@@ -1226,6 +1594,20 @@ export interface components {
         QuestionOrder: {
             question_ids: string[];
         };
+        /** @description Статистика вопроса. */
+        QuestionStat: {
+            answered: number;
+            average_score?: string | null;
+            body: string;
+            fully_correct: number;
+            number: number;
+            options: components["schemas"]["OptionStat"][];
+            /** Format: uuid */
+            question_id: string;
+            /** @description Сколько итоговых попыток содержали вопрос (размер выборки). */
+            sample: number;
+            skipped: number;
+        };
         /** @description Данные регистрации. */
         RegisterRequest: {
             display_name: string;
@@ -1238,6 +1620,14 @@ export interface components {
         ResetRequest: {
             password: string;
             token: string;
+        };
+        /** @description Таблица теста. */
+        ResultsTable: {
+            columns: components["schemas"]["ColumnHeader"][];
+            rows: components["schemas"]["TableRow"][];
+            /** Format: uuid */
+            test_id: string;
+            title: string;
         };
         /** @description Доступен ли разбор и когда станет. */
         ReviewAvailability: {
@@ -1337,6 +1727,27 @@ export interface components {
             last_seen_at: string;
             user_agent?: string | null;
         };
+        /**
+         * @description Событие, при котором собраны сигналы.
+         * @enum {string}
+         */
+        SignalEvent: "register" | "login" | "invite" | "attempt_start" | "answer";
+        /** @description Сигналы от клиента. */
+        SignalInput: {
+            /** @description Признаки конкретного браузера. */
+            browser?: {
+                [key: string]: string;
+            };
+            /** @description Признаки устройства, не зависящие от браузера. */
+            device?: {
+                [key: string]: string;
+            };
+            event: components["schemas"]["SignalEvent"];
+            /** @description Постоянный маркер браузера. */
+            marker: string;
+            timezone?: string | null;
+            typing?: components["schemas"]["Typing"] | null;
+        };
         /** @description Начатая (или продолженная) попытка. */
         Started: {
             /** Format: uuid */
@@ -1374,6 +1785,54 @@ export interface components {
             submit_reason?: string | null;
             /** Format: date-time */
             submitted_at?: string | null;
+        };
+        /** @description Итог студента по тесту. */
+        SummaryCell: {
+            /** Format: int64 */
+            attempts: number;
+            final_score?: string | null;
+            max_score?: string | null;
+            /** Format: uuid */
+            test_id: string;
+        };
+        /** @description Строка сводной таблицы. */
+        SummaryRow: {
+            cells: components["schemas"]["SummaryCell"][];
+            display_name: string;
+            email: string;
+            /** Format: uuid */
+            user_id: string;
+        };
+        /** @description Тест-столбец сводной таблицы. */
+        SummaryTest: {
+            /** Format: uuid */
+            test_id: string;
+            title: string;
+        };
+        /** @description Строка таблицы. */
+        TableRow: {
+            /** @description Есть ли значимые сигналы антифрода. */
+            antifraud: boolean;
+            /** Format: uuid */
+            attempt_id: string;
+            attempt_number: number;
+            cells: components["schemas"]["Cell"][];
+            display_name: string;
+            /** Format: int64 */
+            duration_seconds: number;
+            email: string;
+            final_score?: string | null;
+            max_score: string;
+            removed: boolean;
+            score: string;
+            /** Format: date-time */
+            started_at: string;
+            stream_name?: string | null;
+            submit_reason?: string | null;
+            /** Format: date-time */
+            submitted_at: string;
+            /** Format: uuid */
+            user_id: string;
         };
         /** @description Преподаватель курса. */
         Teacher: {
@@ -1469,6 +1928,13 @@ export interface components {
             used_at: string;
             /** Format: uuid */
             user_id: string;
+        };
+        /** @description Ритм набора: интервалы удержания и между нажатиями, мс (без кодов клавиш). */
+        Typing: {
+            dwell?: number[];
+            flight?: number[];
+            /** @description Тип устройства ввода: `touch` или `keyboard`. */
+            input?: string;
         };
         /** @description Загруженная картинка. */
         Uploaded: {
@@ -1597,12 +2063,12 @@ export interface operations {
     };
     list_users: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
+            query?: {
                 /** @description Часть email или имени. */
-                search: string;
+                search?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -1662,6 +2128,27 @@ export interface operations {
                 content?: never;
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decide: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Decision"];
+            };
+        };
+        responses: {
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1758,6 +2245,27 @@ export interface operations {
             };
         };
     };
+    attempt_details: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttemptDetails"];
+                };
+            };
+        };
+    };
     client_events: {
         parameters: {
             query?: never;
@@ -1838,7 +2346,7 @@ export interface operations {
             };
         };
     };
-    submit: {
+    submit_attempt: {
         parameters: {
             query?: never;
             header?: never;
@@ -1855,6 +2363,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Submitted"];
+                };
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: {
+                course_id?: string;
+                actor_id?: string;
+                action?: string;
+                object_id?: string;
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRecord"][];
                 };
             };
         };
@@ -1927,6 +2461,62 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["MeResponse"];
                 };
+            };
+        };
+    };
+    callback: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description редирект в приложение */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    yandex_start: {
+        parameters: {
+            query?: {
+                /** @description Куда вернуться после входа (только путь этого сайта). */
+                next?: string;
+                /** @description Токен ссылки доверенной регистрации. */
+                trusted?: string;
+                /** @description Токен приглашения в поток. */
+                invite?: string;
+                /** @description `link` — привязать Яндекс ID к текущей учётке. */
+                intent?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description редирект на Яндекс */
+            303: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description провайдер не настроен */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -2157,6 +2747,27 @@ export interface operations {
             };
         };
     };
+    course_links: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                course_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CourseLinks"];
+                };
+            };
+        };
+    };
     clone_course: {
         parameters: {
             query?: never;
@@ -2174,6 +2785,54 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Created"];
+                };
+            };
+        };
+    };
+    course_summary: {
+        parameters: {
+            query?: {
+                stream_id?: string;
+                mode?: "final" | "all";
+            };
+            header?: never;
+            path: {
+                course_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CourseSummary"];
+                };
+            };
+        };
+    };
+    course_csv: {
+        parameters: {
+            query?: {
+                stream_id?: string;
+                mode?: "final" | "all";
+            };
+            header?: never;
+            path: {
+                course_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
                 };
             };
         };
@@ -2374,6 +3033,50 @@ export interface operations {
             };
         };
     };
+    list_identities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Identity"][];
+                };
+            };
+        };
+    };
+    unlink_identity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     change_password: {
         parameters: {
             query?: never;
@@ -2499,6 +3202,27 @@ export interface operations {
             };
         };
     };
+    submit_signals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SignalInput"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_streams: {
         parameters: {
             query?: never;
@@ -2607,12 +3331,13 @@ export interface operations {
     };
     invite_uses: {
         parameters: {
-            query?: never;
+            query?: {
+                link_id?: string;
+                user_id?: string;
+            };
             header?: never;
             path: {
                 stream_id: string;
-                link_id: string | null;
-                user_id: string | null;
             };
             cookie?: never;
         };
@@ -2769,7 +3494,7 @@ export interface operations {
             };
         };
     };
-    start: {
+    start_attempt: {
         parameters: {
             query?: never;
             header?: never;
@@ -2933,6 +3658,78 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    test_results: {
+        parameters: {
+            query?: {
+                stream_id?: string;
+                mode?: "final" | "all";
+            };
+            header?: never;
+            path: {
+                test_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResultsTable"];
+                };
+            };
+        };
+    };
+    test_csv: {
+        parameters: {
+            query?: {
+                stream_id?: string;
+                mode?: "final" | "all";
+            };
+            header?: never;
+            path: {
+                test_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                };
+            };
+        };
+    };
+    question_stats: {
+        parameters: {
+            query?: {
+                stream_id?: string;
+                mode?: "final" | "all";
+            };
+            header?: never;
+            path: {
+                test_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuestionStat"][];
+                };
             };
         };
     };

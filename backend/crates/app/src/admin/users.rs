@@ -18,6 +18,7 @@ use crate::state::AppState;
 
 /// Фильтр списка пользователей.
 #[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct UserQuery {
     /// Часть email или имени.
     #[serde(default)]

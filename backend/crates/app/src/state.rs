@@ -27,6 +27,10 @@ pub(crate) struct AppState {
     pub http_client: reqwest::Client,
     /// Хранилище картинок.
     pub blobs: Blobs,
+    /// Загрузки картинок на пользователя: 60 подряд, дальше одна в 2 с.
+    pub uploads: Arc<Limiter<uuid::Uuid>>,
+    /// Таблица IP → ASN.
+    pub asn: Arc<crate::antifraud::asn::AsnTable>,
     /// Не больше двух картинок обрабатываются одновременно.
     pub image_permits: Arc<tokio::sync::Semaphore>,
 }
@@ -36,10 +40,13 @@ impl AppState {
     pub(crate) fn new(config: Config, db: PgPool) -> anyhow::Result<Self> {
         let concurrency = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
         let store = blobs::connect(&config.storage)?;
+        let asn = config.asn_db_path.as_deref().map(|path| crate::antifraud::asn::AsnTable::load(std::path::Path::new(path))).transpose()?.unwrap_or_default();
         Ok(Self {
             db,
             blobs: store,
             image_permits: Arc::new(tokio::sync::Semaphore::new(2)),
+            asn: Arc::new(asn),
+            uploads: Arc::new(Limiter::new(std::time::Duration::from_secs(2), 60)),
             hasher: Hasher::new(config.secrets.peppers.clone(), concurrency),
             config: Arc::new(config),
             clock: Clock::System,

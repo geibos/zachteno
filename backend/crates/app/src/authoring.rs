@@ -11,7 +11,7 @@ mod teachers;
 #[cfg(test)]
 mod tests;
 
-use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouterExt as _};
 use utoipa_axum::routes;
 
 use crate::state::AppState;
@@ -32,6 +32,6 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(questions::create_question))
         .routes(routes!(questions::update_question, questions::delete_question))
         .routes(routes!(questions::reorder_questions))
-        .routes(routes!(attachments::upload))
+        .routes(routes!(attachments::upload).layer(axum::extract::DefaultBodyLimit::max(crate::blobs::MAX_UPLOAD_BYTES + 64 * 1024)))
         .routes(routes!(attachments::serve))
 }

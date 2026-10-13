@@ -34,16 +34,25 @@ pub(crate) async fn upload(
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<Uploaded>)> {
     access::require_methodist(&user)?;
-    let mut file = None;
-    while let Some(field) = multipart.next_field().await.map_err(|error| AppError::BadRequest(error.to_string()))? {
-        if field.name() == Some("file") {
-            file = Some(field.bytes().await.map_err(|_| AppError::BadRequest("файл больше 10 МБ".to_owned()))?);
-        }
-    }
-    let upload = file.ok_or_else(|| AppError::BadRequest("Нет файла в поле file".to_owned()))?;
+    state
+        .uploads
+        .check(&user.id, std::time::Instant::now())
+        .map_err(|wait| AppError::TooManyRequests { retry_after_secs: wait.as_secs().max(1) })?;
+    let upload = first_file(&mut multipart).await?;
     let processed = process(&state, upload.to_vec()).await?;
     let id = store(&state, &user, processed.clone()).await?;
     Ok((StatusCode::CREATED, Json(Uploaded { id, url: format!("/api/files/{id}"), width: processed.width, height: processed.height })))
+}
+
+/// Читает только первое поле `file`; остальные поля не буферизуются.
+async fn first_file(multipart: &mut Multipart) -> ApiResult<bytes::Bytes> {
+    let malformed = |error: axum::extract::multipart::MultipartError| AppError::BadRequest(error.body_text());
+    while let Some(field) = multipart.next_field().await.map_err(malformed)? {
+        if field.name() == Some("file") {
+            return field.bytes().await.map_err(|_| AppError::BadRequest("Файл больше 10 МБ".to_owned()));
+        }
+    }
+    Err(AppError::BadRequest("Нет файла в поле file".to_owned()))
 }
 
 async fn process(state: &AppState, upload: Vec<u8>) -> ApiResult<Processed> {

@@ -72,6 +72,7 @@ CREATE TABLE options (
     image_alt    text NOT NULL DEFAULT '',
     is_correct   boolean NOT NULL DEFAULT false,
     penalty      numeric(8, 2) NOT NULL DEFAULT 0 CHECK (penalty <= 0),
+    penalty_custom boolean NOT NULL DEFAULT false,
     pinned       boolean NOT NULL DEFAULT false
 );
 CREATE INDEX options_question_idx ON options (question_id, position);

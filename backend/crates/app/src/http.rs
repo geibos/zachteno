@@ -14,7 +14,7 @@ use utoipa::OpenApi;
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::state::AppState;
-use crate::{admin, auth, authoring, ops};
+use crate::{admin, antifraud, attempts, audit, auth, authoring, ops, reporting, streams};
 
 /// Наибольший размер тела запроса (картинки до 10 МБ плюс запас).
 const BODY_LIMIT_BYTES: usize = 12 * 1024 * 1024;
@@ -26,6 +26,11 @@ struct ApiDoc;
 /// Маршруты API без состояния — для генерации OpenAPI.
 pub(crate) fn api() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(ApiDoc::openapi()).merge(auth::routes()).merge(admin::routes()).merge(authoring::routes())
+        .merge(streams::routes())
+        .merge(attempts::routes())
+        .merge(reporting::routes())
+        .merge(antifraud::routes())
+        .merge(audit::routes())
 }
 
 /// Документ OpenAPI в JSON.

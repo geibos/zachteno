@@ -25,6 +25,8 @@ pub(crate) struct Config {
     pub mail: MailConfig,
     pub yandex: Option<OAuthClient>,
     pub signal_retention_days: u32,
+    /// Файл iptoasn `ip2asn-v4.tsv` (необязательно).
+    pub asn_db_path: Option<String>,
 }
 
 /// Адреса HTTP и доверенные прокси.
@@ -101,6 +103,7 @@ impl Config {
             mail: mail_from_env()?,
             yandex: yandex_from_env(),
             signal_retention_days: optional("SIGNAL_RETENTION_DAYS", "365").parse()?,
+            asn_db_path: env::var("ASN_DB_PATH").ok().filter(|path| !path.is_empty()),
         })
     }
 }

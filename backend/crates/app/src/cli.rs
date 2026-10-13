@@ -96,6 +96,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 }
 
 fn spawn_workers(state: &AppState) {
+    drop(tokio::spawn(crate::sweeper::run(state.clone())));
+    drop(tokio::spawn(crate::antifraud::run_worker(state.clone())));
     let mail_state = state.clone();
     drop(tokio::spawn(async move {
         if let Err(error) = mail::run_worker(mail_state).await {

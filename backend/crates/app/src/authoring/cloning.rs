@@ -103,8 +103,8 @@ async fn copy_questions(tx: &mut PgConnection, from: Uuid, to: Uuid) -> ApiResul
               inserted AS (
                 INSERT INTO questions (id, test_id, position, kind, body, weight, image_id, image_alt, hint)
                 SELECT new_id, $2, position, kind, body, weight, image_id, image_alt, hint FROM source RETURNING id)
-         INSERT INTO options (question_id, position, body, image_id, image_alt, is_correct, penalty, pinned)
-         SELECT s.new_id, o.position, o.body, o.image_id, o.image_alt, o.is_correct, o.penalty, o.pinned
+         INSERT INTO options (question_id, position, body, image_id, image_alt, is_correct, penalty, pinned, penalty_custom)
+         SELECT s.new_id, o.position, o.body, o.image_id, o.image_alt, o.is_correct, o.penalty, o.pinned, o.penalty_custom
          FROM options o JOIN source s ON s.id = o.question_id",
     )
     .bind(from)

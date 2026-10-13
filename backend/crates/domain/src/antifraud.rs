@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 #[cfg(test)]
 mod tests;
@@ -20,7 +21,7 @@ pub enum LinkLevel {
 }
 
 /// Вид совпадения, на котором основана связь.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     /// Общий маркер браузера.

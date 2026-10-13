@@ -61,6 +61,7 @@ CREATE TABLE oauth_states (
     link_user_id   uuid REFERENCES users (id) ON DELETE CASCADE,
     invite_hash    bytea,
     trusted_hash   bytea,
+    next_path      text,
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 

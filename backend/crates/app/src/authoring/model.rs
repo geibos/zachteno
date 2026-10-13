@@ -207,8 +207,11 @@ pub(crate) struct OptionDetail {
     pub body: String,
     pub image: Option<ImageRef>,
     pub is_correct: bool,
+    /// Действующий штраф (заданный или по умолчанию для режима).
     #[schema(value_type = String)]
     pub penalty: Decimal,
+    /// Задан ли штраф явно (иначе берётся по умолчанию и пересчитывается при смене веса).
+    pub penalty_custom: bool,
     pub pinned: bool,
 }
 
@@ -260,6 +263,7 @@ struct OptionRow {
     image_alt: String,
     is_correct: bool,
     penalty: Decimal,
+    penalty_custom: bool,
     pinned: bool,
 }
 
@@ -267,18 +271,26 @@ struct OptionRow {
 ///
 /// cancel-safe: yes — только чтение.
 pub(crate) async fn load_questions(db: &sqlx::PgPool, test_id: Uuid) -> ApiResult<Vec<QuestionDetail>> {
+    let mut connection = db.acquire().await?;
+    load_questions_in(&mut connection, test_id).await
+}
+
+/// То же в рамках открытого соединения или транзакции.
+///
+/// cancel-safe: yes — только чтение.
+pub(crate) async fn load_questions_in(db: &mut sqlx::PgConnection, test_id: Uuid) -> ApiResult<Vec<QuestionDetail>> {
     let questions: Vec<QuestionRow> = sqlx::query_as(
         "SELECT id, position, kind, body, weight, image_id, image_alt FROM questions WHERE test_id = $1 ORDER BY position, id",
     )
     .bind(test_id)
-    .fetch_all(db)
+    .fetch_all(&mut *db)
     .await?;
     let options: Vec<OptionRow> = sqlx::query_as(
-        "SELECT o.id, o.question_id, o.body, o.image_id, o.image_alt, o.is_correct, o.penalty, o.pinned
+        "SELECT o.id, o.question_id, o.body, o.image_id, o.image_alt, o.is_correct, o.penalty, o.penalty_custom, o.pinned
          FROM options o JOIN questions q ON q.id = o.question_id WHERE q.test_id = $1 ORDER BY o.position, o.id",
     )
     .bind(test_id)
-    .fetch_all(db)
+    .fetch_all(&mut *db)
     .await?;
     Ok(assemble(questions, options))
 }
@@ -292,6 +304,7 @@ fn assemble(questions: Vec<QuestionRow>, options: Vec<OptionRow>) -> Vec<Questio
             body: option.body,
             is_correct: option.is_correct,
             penalty: option.penalty.normalize(),
+            penalty_custom: option.penalty_custom,
             pinned: option.pinned,
         });
     }
