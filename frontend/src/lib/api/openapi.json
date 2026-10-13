@@ -10,12 +10,442 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/admin/trusted-links": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Список ссылок доверенной регистрации.",
+        "operationId": "list_links",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrustedLinkSummary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Создаёт ссылку доверенной регистрации.",
+        "operationId": "create_link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTrustedLink"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedLink"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/trusted-links/{link_id}/uses": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Журнал использования ссылки.",
+        "operationId": "list_uses",
+        "parameters": [
+          {
+            "name": "link_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrustedLinkUse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Поиск пользователей.",
+        "operationId": "list_users",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "path",
+            "description": "Часть email или имени.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UserSummary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/{user_id}/block": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Блокирует пользователя (с завершением всех сессий) или снимает блокировку.",
+        "operationId": "set_blocked",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlockChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/admin/users/{user_id}/roles": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Выдаёт или снимает роль методиста или суперпользователя.",
+        "operationId": "set_role",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "409": {}
+        }
+      }
+    },
+    "/api/attachments": {
+      "post": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Загружает картинку (поле `file`, до 10 МБ): проверка формата, перекодирование без метаданных.",
+        "operationId": "upload",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {}
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Uploaded"
+                }
+              }
+            }
+          },
+          "400": {}
+        }
+      }
+    },
+    "/api/attempts/{attempt_id}": {
+      "get": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Попытка с вопросами в порядке раскладки, без признаков правильности.",
+        "operationId": "get_attempt",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptView"
+                }
+              }
+            }
+          },
+          "404": {}
+        }
+      }
+    },
+    "/api/attempts/{attempt_id}/answers/{question_id}": {
+      "put": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Сохраняет ответ (идемпотентно по `client_seq`).",
+        "operationId": "save_answer",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "question_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnswerSaved"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "время вышло или вопрос закрыт"
+          }
+        }
+      }
+    },
+    "/api/attempts/{attempt_id}/events": {
+      "post": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Записывает события вкладки и связи (с серверным временем).",
+        "operationId": "client_events",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientEvents"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/attempts/{attempt_id}/navigate": {
+      "post": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Переходит к вопросу; в последовательном режиме — только вперёд и только с ответом.",
+        "operationId": "navigate",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NavigateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "409": {}
+        }
+      }
+    },
+    "/api/attempts/{attempt_id}/review": {
+      "get": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Разбор своей попытки; до разрешённого момента — только факт сдачи.",
+        "operationId": "get_review",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewView"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "попытка не сдана"
+          }
+        }
+      }
+    },
+    "/api/attempts/{attempt_id}/submit": {
+      "post": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Сдаёт попытку.",
+        "operationId": "submit",
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Submitted"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/login": {
       "post": {
         "tags": [
           "auth"
         ],
         "summary": "Вход по email и паролю.",
+        "description": "Ответ и пауза не зависят от того, существует ли учётная запись.",
         "operationId": "login",
         "requestBody": {
           "content": {
@@ -191,6 +621,402 @@
         }
       }
     },
+    "/api/courses": {
+      "get": {
+        "tags": [
+          "courses"
+        ],
+        "summary": "Курсы, которые пользователь ведёт или видит: методист и суперпользователь — все, преподаватель — свои.",
+        "operationId": "list_courses",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CourseSummary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "courses"
+        ],
+        "summary": "Создаёт курс; создатель становится владельцем.",
+        "operationId": "create_course",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewCourse"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Created"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/courses/{course_id}": {
+      "get": {
+        "tags": [
+          "courses"
+        ],
+        "summary": "Карточка курса.",
+        "operationId": "get_course",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CourseDetail"
+                }
+              }
+            }
+          },
+          "404": {}
+        }
+      },
+      "patch": {
+        "tags": [
+          "courses"
+        ],
+        "summary": "Меняет название, описание или архивирует курс.",
+        "operationId": "update_course",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoursePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/courses/{course_id}/clone": {
+      "post": {
+        "tags": [
+          "courses"
+        ],
+        "summary": "Клонирует курс целиком; владелец клона — тот, кто клонирует.",
+        "operationId": "clone_course",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Created"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/courses/{course_id}/teachers": {
+      "get": {
+        "tags": [
+          "courses"
+        ],
+        "summary": "Преподаватели курса.",
+        "operationId": "list_teachers",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Teacher"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "courses"
+        ],
+        "summary": "Назначает преподавателя на свой курс по email зарегистрированного пользователя.",
+        "operationId": "assign_teacher",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignTeacher"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "description": "пользователь не найден"
+          }
+        }
+      }
+    },
+    "/api/courses/{course_id}/teachers/{user_id}": {
+      "delete": {
+        "tags": [
+          "courses"
+        ],
+        "summary": "Снимает преподавателя с курса.",
+        "operationId": "remove_teacher",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/courses/{course_id}/tests": {
+      "post": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Создаёт тест в курсе с настройками по умолчанию.",
+        "operationId": "create_test",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Created"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dashboard": {
+      "get": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Доступные, запланированные и пройденные тесты студента.",
+        "operationId": "dashboard",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/files/{attachment_id}": {
+      "get": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Отдаёт картинку тем, кто видит курс с ней или проходит тест, где она используется.",
+        "operationId": "serve",
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/*": {}
+            }
+          },
+          "404": {}
+        }
+      }
+    },
+    "/api/invites/{token}": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Название потока по ссылке (доступно без входа).",
+        "operationId": "invite_info",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteInfo"
+                }
+              }
+            }
+          },
+          "404": {}
+        }
+      }
+    },
+    "/api/invites/{token}/join": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Вступление в поток по ссылке; каждый переход записывается в журнал.",
+        "operationId": "join",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Joined"
+                }
+              }
+            }
+          },
+          "404": {}
+        }
+      }
+    },
     "/api/profile/password": {
       "post": {
         "tags": [
@@ -260,10 +1086,891 @@
           "204": {}
         }
       }
+    },
+    "/api/questions/{question_id}": {
+      "put": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Заменяет вопрос целиком.",
+        "operationId": "update_question",
+        "parameters": [
+          {
+            "name": "question_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "409": {}
+        }
+      },
+      "delete": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Удаляет вопрос.",
+        "operationId": "delete_question",
+        "parameters": [
+          {
+            "name": "question_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "409": {}
+        }
+      }
+    },
+    "/api/streams": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Потоки, которыми я управляю.",
+        "operationId": "list_streams",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StreamSummary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Создаёт поток.",
+        "operationId": "create_stream",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewStream"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Created"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{stream_id}": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Поток: курсы и участники.",
+        "operationId": "get_stream",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{stream_id}/courses": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Назначает поток на курс (методист-владелец или преподаватель курса).",
+        "operationId": "assign_course",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CourseRef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/streams/{stream_id}/courses/{course_id}": {
+      "delete": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Снимает поток с курса.",
+        "operationId": "unassign_course",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/streams/{stream_id}/invite-uses": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Журнал переходов по ссылкам потока, с фильтрами по ссылке и студенту.",
+        "operationId": "invite_uses",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "link_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/InviteUse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{stream_id}/invites": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Ссылки потока.",
+        "operationId": "list_invites",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/InviteSummary"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Создаёт многоразовую пригласительную ссылку.",
+        "operationId": "create_invite",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewInvite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedInvite"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/streams/{stream_id}/members/{user_id}": {
+      "delete": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Исключает студента: доступ к тестам потока пропадает, попытки остаются.",
+        "operationId": "remove_member",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/tests/{test_id}": {
+      "get": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Тест целиком (с правильными ответами) — только тем, кто видит курс.",
+        "operationId": "get_test",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestDetail"
+                }
+              }
+            }
+          },
+          "404": {}
+        }
+      },
+      "patch": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Меняет название, описание и настройки. У заблокированного теста — только название,\nописание и политику показа результатов.",
+        "operationId": "update_test",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "409": {}
+        }
+      }
+    },
+    "/api/tests/{test_id}/archive": {
+      "post": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Отправляет тест в архив.",
+        "operationId": "archive_test",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/tests/{test_id}/attempts": {
+      "post": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Начинает попытку или продолжает незавершённую.",
+        "operationId": "start",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            }
+          },
+          "409": {}
+        }
+      }
+    },
+    "/api/tests/{test_id}/clone": {
+      "post": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Клонирует тест (свой или чужой) в свой курс: черновик без попыток и без блокировки.",
+        "operationId": "clone_test",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneTarget"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Created"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tests/{test_id}/preview": {
+      "post": {
+        "tags": [
+          "attempts"
+        ],
+        "summary": "Предпросмотр теста глазами студента: попытка без записи в результаты и без блокировки.",
+        "operationId": "preview",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tests/{test_id}/publish": {
+      "post": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Публикует тест после проверки всех вопросов.",
+        "operationId": "publish_test",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "400": {
+            "description": "нарушены правила вопросов"
+          }
+        }
+      }
+    },
+    "/api/tests/{test_id}/questions": {
+      "post": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Добавляет вопрос в конец теста.",
+        "operationId": "create_question",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Created"
+                }
+              }
+            }
+          },
+          "409": {}
+        }
+      }
+    },
+    "/api/tests/{test_id}/questions/order": {
+      "post": {
+        "tags": [
+          "tests"
+        ],
+        "summary": "Меняет порядок вопросов.",
+        "operationId": "reorder_questions",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionOrder"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "409": {}
+        }
+      }
+    },
+    "/api/tests/{test_id}/windows": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Окна теста по всем потокам курса.",
+        "operationId": "list_windows",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WindowState"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tests/{test_id}/windows/{stream_id}": {
+      "put": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Открывает, закрывает или планирует окно для потока.",
+        "operationId": "change_window",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WindowChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {}
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AnswerInput": {
+        "type": "object",
+        "description": "Ответ на вопрос.",
+        "required": [
+          "client_seq"
+        ],
+        "properties": {
+          "client_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Монотонный номер изменения на клиенте: старые запросы игнорируются."
+          },
+          "selected_option_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AnswerSaved": {
+        "type": "object",
+        "description": "Подтверждение сохранения.",
+        "required": [
+          "client_seq",
+          "saved_at"
+        ],
+        "properties": {
+          "client_seq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "saved_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AssignTeacher": {
+        "type": "object",
+        "description": "Кого назначить.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          }
+        }
+      },
+      "AttemptView": {
+        "type": "object",
+        "description": "Попытка для прохождения.",
+        "required": [
+          "id",
+          "test_id",
+          "title",
+          "navigation",
+          "is_preview",
+          "server_now",
+          "current_index",
+          "questions",
+          "answers"
+        ],
+        "properties": {
+          "answers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SavedAnswer"
+            }
+          },
+          "current_index": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "deadline_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "is_preview": {
+            "type": "boolean"
+          },
+          "navigation": {
+            "$ref": "#/components/schemas/Navigation"
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunnerQuestion"
+            }
+          },
+          "server_now": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "submitted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "test_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "BlockChange": {
+        "type": "object",
+        "description": "Заблокировать или разблокировать.",
+        "required": [
+          "blocked"
+        ],
+        "properties": {
+          "blocked": {
+            "type": "boolean"
+          }
+        }
+      },
       "ChangePasswordRequest": {
         "type": "object",
         "description": "Смена или первое задание пароля.",
@@ -280,6 +1987,196 @@
           },
           "new_password": {
             "type": "string"
+          }
+        }
+      },
+      "Choice": {
+        "type": "string",
+        "description": "Вид вопроса для студента: без режима оценки.",
+        "enum": [
+          "single",
+          "multiple",
+          "free_text"
+        ]
+      },
+      "ClientEventKind": {
+        "type": "string",
+        "description": "Событие клиента.",
+        "enum": [
+          "tab_hidden",
+          "tab_visible",
+          "offline",
+          "online"
+        ]
+      },
+      "ClientEvents": {
+        "type": "object",
+        "description": "Пачка событий клиента.",
+        "required": [
+          "events"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientEventKind"
+            }
+          }
+        }
+      },
+      "CloneTarget": {
+        "type": "object",
+        "description": "Куда клонировать тест.",
+        "required": [
+          "course_id"
+        ],
+        "properties": {
+          "course_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "CourseDetail": {
+        "type": "object",
+        "description": "Курс целиком: описание, мои права и тесты.",
+        "required": [
+          "id",
+          "title",
+          "description",
+          "owner_id",
+          "owner_name",
+          "archived",
+          "can_edit",
+          "can_manage",
+          "tests"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "can_edit": {
+            "type": "boolean"
+          },
+          "can_manage": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "owner_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "owner_name": {
+            "type": "string"
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestSummary"
+            }
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "CoursePatch": {
+        "type": "object",
+        "description": "Изменение курса.",
+        "properties": {
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CourseRef": {
+        "type": "object",
+        "description": "Курс для назначения.",
+        "required": [
+          "course_id"
+        ],
+        "properties": {
+          "course_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "CourseSummary": {
+        "type": "object",
+        "description": "Курс в списке.",
+        "required": [
+          "id",
+          "title",
+          "description",
+          "owner_name",
+          "owner_id",
+          "archived",
+          "tests_count",
+          "created_at"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "owner_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "owner_name": {
+            "type": "string"
+          },
+          "tests_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "Created": {
+        "type": "object",
+        "description": "Созданный объект.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },
@@ -320,6 +2217,146 @@
           }
         }
       },
+      "Dashboard": {
+        "type": "object",
+        "description": "Тесты студента по группам.",
+        "required": [
+          "available",
+          "scheduled",
+          "completed"
+        ],
+        "properties": {
+          "available": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardTest"
+            }
+          },
+          "completed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardTest"
+            }
+          },
+          "scheduled": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardTest"
+            }
+          }
+        }
+      },
+      "DashboardTest": {
+        "type": "object",
+        "description": "Тест на панели.",
+        "required": [
+          "test_id",
+          "title",
+          "description",
+          "course_title",
+          "attempts_used",
+          "question_count",
+          "free_navigation",
+          "is_open"
+        ],
+        "properties": {
+          "active_attempt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "attempts_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "attempts_used": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "closes_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "course_title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "final_score": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Итоговый балл — если результаты уже можно смотреть."
+          },
+          "free_navigation": {
+            "type": "boolean"
+          },
+          "is_open": {
+            "type": "boolean"
+          },
+          "last_submitted_attempt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "opens_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "question_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "review": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReviewAvailability"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "test_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "time_limit_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "FinalScorePolicy": {
+        "type": "string",
+        "description": "Как выбирается итоговый балл из сданных попыток.",
+        "enum": [
+          "best",
+          "last",
+          "average"
+        ]
+      },
       "ForgotRequest": {
         "type": "object",
         "description": "Email для восстановления пароля.",
@@ -328,6 +2365,177 @@
         ],
         "properties": {
           "email": {
+            "type": "string"
+          }
+        }
+      },
+      "GlobalRole": {
+        "type": "string",
+        "description": "Глобальная роль.",
+        "enum": [
+          "superuser",
+          "methodist"
+        ]
+      },
+      "ImageRef": {
+        "type": "object",
+        "description": "Картинка, прикреплённая к вопросу или варианту.",
+        "required": [
+          "id",
+          "url",
+          "alt"
+        ],
+        "properties": {
+          "alt": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "InviteInfo": {
+        "type": "object",
+        "description": "Что видит посетитель на странице приглашения.",
+        "required": [
+          "stream_name",
+          "courses"
+        ],
+        "properties": {
+          "courses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "stream_name": {
+            "type": "string"
+          }
+        }
+      },
+      "InviteSummary": {
+        "type": "object",
+        "description": "Ссылка в списке.",
+        "required": [
+          "id",
+          "label",
+          "created_at",
+          "uses",
+          "students"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string"
+          },
+          "students": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "uses": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "InviteUse": {
+        "type": "object",
+        "description": "Переход по ссылке.",
+        "required": [
+          "link_id",
+          "link_label",
+          "user_id",
+          "email",
+          "display_name",
+          "used_at"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "link_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "link_label": {
+            "type": "string"
+          },
+          "used_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "IssuedInvite": {
+        "type": "object",
+        "description": "Выпущенная ссылка; полный URL виден только при создании.",
+        "required": [
+          "id",
+          "url"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "IssuedLink": {
+        "type": "object",
+        "description": "Выпущенная ссылка; полный URL показывается один раз.",
+        "required": [
+          "id",
+          "url"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "Joined": {
+        "type": "object",
+        "description": "Результат вступления.",
+        "required": [
+          "stream_id",
+          "stream_name",
+          "already_member"
+        ],
+        "properties": {
+          "already_member": {
+            "type": "boolean",
+            "description": "Был ли уже участником."
+          },
+          "stream_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "stream_name": {
             "type": "string"
           }
         }
@@ -367,6 +2575,307 @@
           },
           "yandex_enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "Member": {
+        "type": "object",
+        "description": "Участник потока.",
+        "required": [
+          "user_id",
+          "email",
+          "display_name",
+          "email_verified",
+          "trusted_registration",
+          "joined_at"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "email_verified": {
+            "type": "boolean"
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "removed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "trusted_registration": {
+            "type": "boolean"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "NavigateInput": {
+        "type": "object",
+        "description": "Переход к вопросу.",
+        "required": [
+          "to_index"
+        ],
+        "properties": {
+          "to_index": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "Navigation": {
+        "type": "string",
+        "description": "Режим навигации по вопросам.",
+        "enum": [
+          "free",
+          "sequential"
+        ]
+      },
+      "NewCourse": {
+        "type": "object",
+        "description": "Новый курс.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "NewInvite": {
+        "type": "object",
+        "description": "Новая ссылка.",
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "NewStream": {
+        "type": "object",
+        "description": "Новый поток.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "NewTest": {
+        "type": "object",
+        "description": "Новый тест.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "NewTrustedLink": {
+        "type": "object",
+        "description": "Новая ссылка.",
+        "properties": {
+          "label": {
+            "type": "string"
+          }
+        }
+      },
+      "OptionDetail": {
+        "type": "object",
+        "description": "Вариант ответа для редактора (с правильностью и штрафом).",
+        "required": [
+          "id",
+          "body",
+          "is_correct",
+          "penalty",
+          "pinned"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "image": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_correct": {
+            "type": "boolean"
+          },
+          "penalty": {
+            "type": "string"
+          },
+          "pinned": {
+            "type": "boolean"
+          }
+        }
+      },
+      "OptionInput": {
+        "type": "object",
+        "description": "Вариант ответа от редактора.",
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "image_alt": {
+            "type": "string"
+          },
+          "image_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "is_correct": {
+            "type": "boolean"
+          },
+          "penalty": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Штраф (≤ 0); `null` — по умолчанию для режима оценки."
+          },
+          "pinned": {
+            "type": "boolean"
+          }
+        }
+      },
+      "QuestionDetail": {
+        "type": "object",
+        "description": "Вопрос для редактора.",
+        "required": [
+          "id",
+          "position",
+          "kind",
+          "body",
+          "weight",
+          "options"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "image": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/QuestionKind"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OptionDetail"
+            }
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "weight": {
+            "type": "string"
+          }
+        }
+      },
+      "QuestionInput": {
+        "type": "object",
+        "description": "Вопрос от редактора: заменяет вопрос целиком вместе с вариантами.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "image_alt": {
+            "type": "string"
+          },
+          "image_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/QuestionKind"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OptionInput"
+            }
+          },
+          "weight": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Вес; по умолчанию 1."
+          }
+        }
+      },
+      "QuestionKind": {
+        "type": "string",
+        "description": "Тип вопроса вместе с режимом оценки множественного выбора.",
+        "enum": [
+          "single",
+          "multiple_all",
+          "multiple_any",
+          "free_text"
+        ]
+      },
+      "QuestionOrder": {
+        "type": "object",
+        "description": "Новый порядок вопросов.",
+        "required": [
+          "question_ids"
+        ],
+        "properties": {
+          "question_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         }
       },
@@ -413,6 +2922,201 @@
           }
         }
       },
+      "ReviewAvailability": {
+        "type": "object",
+        "description": "Доступен ли разбор и когда станет.",
+        "required": [
+          "available",
+          "mode",
+          "waiting_for_stream"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ReviewMode"
+          },
+          "not_before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "waiting_for_stream": {
+            "type": "boolean",
+            "description": "Ждём закрытия окна или завершения чужих попыток потока."
+          }
+        }
+      },
+      "ReviewMode": {
+        "type": "string",
+        "description": "Политика показа результатов (без даты — она отдельным полем).",
+        "enum": [
+          "never",
+          "after_submit",
+          "after_close"
+        ]
+      },
+      "ReviewOption": {
+        "type": "object",
+        "description": "Вариант в разборе.",
+        "required": [
+          "id",
+          "body",
+          "is_correct",
+          "selected"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "image": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_correct": {
+            "type": "boolean"
+          },
+          "selected": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ReviewQuestion": {
+        "type": "object",
+        "description": "Вопрос в разборе.",
+        "required": [
+          "index",
+          "choice",
+          "body",
+          "weight",
+          "options"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "choice": {
+            "$ref": "#/components/schemas/Choice"
+          },
+          "image": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewOption"
+            }
+          },
+          "score": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Балл; `null` — свободный ответ («не оценивается»)."
+          },
+          "text_answer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "weight": {
+            "type": "string"
+          }
+        }
+      },
+      "ReviewView": {
+        "type": "object",
+        "description": "Разбор попытки.",
+        "required": [
+          "attempt_id",
+          "title",
+          "max_score",
+          "availability",
+          "questions"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/ReviewAvailability"
+          },
+          "max_score": {
+            "type": "string"
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewQuestion"
+            },
+            "description": "Вопросы — только когда разбор доступен."
+          },
+          "score": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submit_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submitted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "RoleChange": {
+        "type": "object",
+        "description": "Выдать или снять роль.",
+        "required": [
+          "role",
+          "granted"
+        ],
+        "properties": {
+          "granted": {
+            "type": "boolean"
+          },
+          "role": {
+            "$ref": "#/components/schemas/GlobalRole"
+          }
+        }
+      },
       "Roles": {
         "type": "object",
         "description": "Глобальные роли пользователя.",
@@ -426,6 +3130,112 @@
           },
           "superuser": {
             "type": "boolean"
+          }
+        }
+      },
+      "RunnerOption": {
+        "type": "object",
+        "description": "Вариант для студента: без правильности и штрафа.",
+        "required": [
+          "id",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "image": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "RunnerQuestion": {
+        "type": "object",
+        "description": "Вопрос попытки для студента.",
+        "required": [
+          "id",
+          "index",
+          "choice",
+          "body",
+          "options"
+        ],
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "choice": {
+            "$ref": "#/components/schemas/Choice"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "image": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImageRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunnerOption"
+            }
+          }
+        }
+      },
+      "SavedAnswer": {
+        "type": "object",
+        "description": "Сохранённый ответ.",
+        "required": [
+          "question_id",
+          "selected_option_ids",
+          "client_seq",
+          "finalized"
+        ],
+        "properties": {
+          "client_seq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "finalized": {
+            "type": "boolean"
+          },
+          "question_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "selected_option_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "text_answer": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -468,6 +3278,334 @@
           }
         }
       },
+      "Started": {
+        "type": "object",
+        "description": "Начатая (или продолженная) попытка.",
+        "required": [
+          "attempt_id",
+          "resumed"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "resumed": {
+            "type": "boolean",
+            "description": "Продолжена ли уже идущая попытка."
+          }
+        }
+      },
+      "StreamCourse": {
+        "type": "object",
+        "description": "Курс потока.",
+        "required": [
+          "course_id",
+          "title"
+        ],
+        "properties": {
+          "course_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "StreamDetail": {
+        "type": "object",
+        "description": "Поток целиком.",
+        "required": [
+          "id",
+          "name",
+          "courses",
+          "members"
+        ],
+        "properties": {
+          "courses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StreamCourse"
+            }
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Member"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "StreamSummary": {
+        "type": "object",
+        "description": "Поток в списке.",
+        "required": [
+          "id",
+          "name",
+          "members",
+          "courses",
+          "created_at"
+        ],
+        "properties": {
+          "courses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "members": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "Submitted": {
+        "type": "object",
+        "description": "Итог сдачи.",
+        "properties": {
+          "submit_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submitted_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "Teacher": {
+        "type": "object",
+        "description": "Преподаватель курса.",
+        "required": [
+          "user_id",
+          "email",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "TestDetail": {
+        "type": "object",
+        "description": "Тест для редактора и предпросмотра.",
+        "required": [
+          "id",
+          "course_id",
+          "title",
+          "description",
+          "status",
+          "settings",
+          "can_edit",
+          "questions"
+        ],
+        "properties": {
+          "can_edit": {
+            "type": "boolean"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "locked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuestionDetail"
+            }
+          },
+          "settings": {
+            "$ref": "#/components/schemas/TestSettings"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TestStatus"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "TestPatch": {
+        "type": "object",
+        "description": "Изменение теста.",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settings": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TestSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TestSettings": {
+        "type": "object",
+        "description": "Настройки теста (spec course-authoring, «Настройки теста»).",
+        "required": [
+          "free_navigation",
+          "shuffle_questions",
+          "shuffle_options",
+          "review_policy",
+          "final_policy"
+        ],
+        "properties": {
+          "attempts_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Лимит попыток; `null` — без ограничения."
+          },
+          "final_policy": {
+            "$ref": "#/components/schemas/FinalScorePolicy"
+          },
+          "free_navigation": {
+            "type": "boolean",
+            "description": "Возврат и пропуск вопросов (один флаг)."
+          },
+          "questions_per_attempt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Сколько вопросов в попытке; `null` — все."
+          },
+          "review_not_before": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "review_policy": {
+            "$ref": "#/components/schemas/ReviewMode"
+          },
+          "shuffle_options": {
+            "type": "boolean"
+          },
+          "shuffle_questions": {
+            "type": "boolean"
+          },
+          "time_limit_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Лимит времени в минутах; `null` — без лимита."
+          }
+        }
+      },
+      "TestStatus": {
+        "type": "string",
+        "description": "Статус теста.",
+        "enum": [
+          "draft",
+          "published",
+          "archived"
+        ]
+      },
+      "TestSummary": {
+        "type": "object",
+        "description": "Тест в карточке курса.",
+        "required": [
+          "id",
+          "title",
+          "status",
+          "position",
+          "question_count",
+          "locked",
+          "anonymous_attempts"
+        ],
+        "properties": {
+          "anonymous_attempts": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "locked": {
+            "type": "boolean"
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "question_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TestStatus"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "TokenRequest": {
         "type": "object",
         "description": "Токен из ссылки.",
@@ -476,6 +3614,244 @@
         ],
         "properties": {
           "token": {
+            "type": "string"
+          }
+        }
+      },
+      "TrustedLinkSummary": {
+        "type": "object",
+        "description": "Ссылка в списке.",
+        "required": [
+          "id",
+          "label",
+          "created_at",
+          "uses"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "label": {
+            "type": "string"
+          },
+          "uses": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "TrustedLinkUse": {
+        "type": "object",
+        "description": "Использование ссылки.",
+        "required": [
+          "user_id",
+          "email",
+          "display_name",
+          "used_at"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "used_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Uploaded": {
+        "type": "object",
+        "description": "Загруженная картинка.",
+        "required": [
+          "id",
+          "url",
+          "width",
+          "height"
+        ],
+        "properties": {
+          "height": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string"
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "UserSummary": {
+        "type": "object",
+        "description": "Пользователь в списке администратора.",
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "roles",
+          "blocked",
+          "email_verified",
+          "trusted_registration",
+          "created_at"
+        ],
+        "properties": {
+          "blocked": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "email_verified": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "trusted_registration": {
+            "type": "boolean"
+          }
+        }
+      },
+      "WindowChange": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Открыть сейчас (отменяет запланированное открытие).",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "open"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Закрыть сейчас (отменяет запланированное закрытие).",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "close"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Запланировать (время в UTC; интерфейс вводит по МСК).",
+            "required": [
+              "action"
+            ],
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "schedule"
+                ]
+              },
+              "close_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "open_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              }
+            }
+          }
+        ],
+        "description": "Действие с окном."
+      },
+      "WindowState": {
+        "type": "object",
+        "description": "Окно для одного потока.",
+        "required": [
+          "stream_id",
+          "stream_name",
+          "is_open",
+          "active_attempts"
+        ],
+        "properties": {
+          "active_attempts": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "close_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "closed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "is_open": {
+            "type": "boolean"
+          },
+          "open_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "stream_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "stream_name": {
             "type": "string"
           }
         }
