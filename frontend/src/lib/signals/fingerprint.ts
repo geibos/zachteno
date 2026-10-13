@@ -162,6 +162,22 @@ export async function collectBrowser(): Promise<Components> {
 	put(result, 'audio', await attempt(audioHash));
 	put(result, 'apis', await attempt(availableApis));
 	put(result, 'do_not_track', navigator.doNotTrack ?? '');
+	// Зависят от браузера, а не от железа: в отпечаток устройства их класть нельзя,
+	// иначе один компьютер в Chromium и Firefox даёт разные отпечатки.
+	put(result, 'languages', (navigator.languages ?? [navigator.language]).join(','));
+	put(result, 'memory', (navigator as { deviceMemory?: number }).deviceMemory);
+	const gl = await attempt(webglInfo);
+	if (gl) {
+		put(result, 'webgl_max_viewport', gl.maxViewport);
+		if (gl.extensions) {
+			put(result, 'webgl_extensions', await attempt(() => sha256Hex(gl.extensions!.join(','))));
+			put(result, 'webgl_extensions_count', gl.extensions.length);
+		}
+	}
+	const os = await osInfo();
+	put(result, 'os_version', os.version);
+	const media = await attempt(mediaCounts);
+	if (media) for (const [kind, n] of Object.entries(media)) put(result, `media_${kind}`, n);
 	return result;
 }
 
@@ -254,17 +270,11 @@ export async function collectDevice(): Promise<Components> {
 		put(result, 'webgl_renderer', gl.renderer ? normalizeGpuString(gl.renderer) : undefined);
 		put(result, 'webgl_vendor', gl.vendor ? normalizeGpuString(gl.vendor) : undefined);
 		put(result, 'webgl_max_texture', gl.maxTexture);
-		put(result, 'webgl_max_viewport', gl.maxViewport);
-		if (gl.extensions) {
-			put(result, 'webgl_extensions', await attempt(() => sha256Hex(gl.extensions!.join(','))));
-			put(result, 'webgl_extensions_count', gl.extensions.length);
-		}
 	}
 	put(result, 'screen', `${screen.width}x${screen.height}`);
 	put(result, 'color_depth', screen.colorDepth);
 	put(result, 'pixel_ratio', window.devicePixelRatio);
 	put(result, 'cores', navigator.hardwareConcurrency);
-	put(result, 'memory', (navigator as { deviceMemory?: number }).deviceMemory);
 	put(result, 'touch_points', navigator.maxTouchPoints);
 	const fonts = await attempt(detectFonts);
 	if (fonts) {
@@ -272,11 +282,7 @@ export async function collectDevice(): Promise<Components> {
 		put(result, 'fonts_count', fonts.count);
 	}
 	put(result, 'timezone', await attempt(() => Intl.DateTimeFormat().resolvedOptions().timeZone));
-	put(result, 'languages', (navigator.languages ?? [navigator.language]).join(','));
-	const os = await osInfo();
-	put(result, 'os', os.os);
-	put(result, 'os_version', os.version);
-	const media = await attempt(mediaCounts);
-	if (media) for (const [kind, n] of Object.entries(media)) put(result, `media_${kind}`, n);
+	// Client Hints пишут «Chrome OS», разбор UA — «ChromeOS»: одно устройство, одно имя.
+	put(result, 'os', (await osInfo()).os.replace(/\s+/g, ''));
 	return result;
 }

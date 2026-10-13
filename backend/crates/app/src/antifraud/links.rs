@@ -84,6 +84,24 @@ const SHARED_DEVICE: &str = "
     FROM signals a JOIN signals b ON b.device_hash = a.device_hash AND b.user_id <> a.user_id
     WHERE a.user_id = $1 AND a.device_hash IS NOT NULL GROUP BY b.user_id, a.device_hash";
 
+/// Аппаратное ядро отпечатка: признаки, которые не зависят от браузера. Совпадение ядра при
+/// разных отпечатках — то же устройство в другом браузере (spec «Смена браузера на том же
+/// устройстве»): у Chromium и Firefox различаются строка GPU, число найденных шрифтов и т. п.
+const SIMILAR_DEVICE: &str = "
+    WITH core AS (
+      SELECT user_id, at, device_hash,
+             concat_ws('|', device_components->>'screen', device_components->>'color_depth',
+                       device_components->>'pixel_ratio', device_components->>'cores',
+                       device_components->>'touch_points', device_components->>'timezone',
+                       device_components->>'os') AS key
+      FROM signals
+      WHERE device_components ? 'screen' AND device_components ? 'cores' AND device_components ? 'os'),
+    mine AS (SELECT DISTINCT key, device_hash FROM core WHERE user_id = $1)
+    SELECT b.user_id AS other, max(b.at) AS at,
+           (SELECT count(DISTINCT c.user_id) FROM core c WHERE c.key = m.key AND c.at > $2) AS extra
+    FROM mine m JOIN core b ON b.key = m.key AND b.user_id <> $1 AND b.device_hash IS DISTINCT FROM m.device_hash
+    GROUP BY b.user_id, m.key";
+
 /// `max(c.users) <= 3`: IP, которым за 30 дней пользовались не больше трёх человек, —
 /// «домашняя сеть».
 const SHARED_NETWORK: &str = "
@@ -172,6 +190,40 @@ fn describe_mistakes(hit: &Hit) -> Described {
     })
 }
 
+/// Совпадение аппаратного ядра: редкое сочетание или распространённое.
+const DESCRIBE_SIMILAR_DEVICE: Describe = |hit| {
+    Some(if hit.extra <= RARE_DEVICE_USERS {
+        (
+            EvidenceKind::SharedRareDevice,
+            "одно и то же устройство в разных браузерах: совпали экран, процессор, ОС и часовой пояс"
+                .to_owned(),
+        )
+    } else {
+        (
+            EvidenceKind::SharedCommonDevice,
+            format!(
+                "одинаковые экран, процессор и ОС в разных браузерах — распространённое сочетание, у {} пользователей",
+                hit.extra
+            ),
+        )
+    })
+};
+
+/// Добавляет совпадения аппаратного ядра тем, у кого ещё нет основания «общее устройство»:
+/// это тот же факт, что и точный отпечаток, и вторым независимым сигналом он не считается.
+fn add_similar_devices(found: &mut Found, hits: Vec<Hit>) {
+    let has_device = |evidence: &[Evidence]| {
+        evidence.iter().any(|piece| {
+            matches!(piece.kind, EvidenceKind::SharedRareDevice | EvidenceKind::SharedCommonDevice)
+        })
+    };
+    let fresh: Vec<Hit> = hits
+        .into_iter()
+        .filter(|hit| !found.get(&hit.other).is_some_and(|evidence| has_device(evidence)))
+        .collect();
+    add(found, fresh, DESCRIBE_SIMILAR_DEVICE);
+}
+
 /// Запрос совпадений и его толкование.
 type Source = (&'static str, Describe);
 
@@ -214,6 +266,7 @@ pub(crate) async fn recompute(state: &AppState, user_id: Uuid) -> ApiResult<()> 
     for (sql, describe) in SOURCES {
         add(&mut found, hits(state, sql, user_id, since).await?, describe);
     }
+    add_similar_devices(&mut found, hits(state, SIMILAR_DEVICE, user_id, since).await?);
     add_typing(state, user_id, &mut found).await?;
     let bridged = add_transitive(state, user_id, since, &mut found).await?;
     save(state, user_id, found, &bridged).await

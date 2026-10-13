@@ -13,8 +13,17 @@ use crate::state::AppState;
 use crate::sweeper;
 use crate::testing::{self, Classroom, Client};
 
+/// Отпечаток устройства; разные `gpu` — разные компьютеры (у них отличается и экран).
 fn device(gpu: &str) -> Json {
-    json!({ "gpu": gpu, "screen": "1920x1080", "cores": "8", "fonts": "a,b,c", "timezone": "Europe/Moscow", "os": "macOS 15" })
+    json!({ "gpu": gpu, "screen": format!("1920x1080 {gpu}"), "cores": "8", "fonts": "a,b,c", "timezone": "Europe/Moscow", "os": "macOS" })
+}
+
+/// Тот же компьютер, каким его видит другой браузер: строка GPU и число шрифтов другие,
+/// аппаратное ядро (экран, процессор, ОС, часовой пояс) — то же.
+fn same_machine(browser: &str) -> Json {
+    json!({ "webgl_renderer": format!("gpu as seen by {browser}"), "fonts": browser, "fonts_count": browser.len().to_string(),
+            "screen": "2560x1600", "color_depth": "30", "pixel_ratio": "2", "cores": "10", "touch_points": "0",
+            "timezone": "Europe/Moscow", "os": "macOS" })
 }
 
 async fn signal(client: &mut Client, marker: &str, device_fields: Json) {
@@ -405,5 +414,59 @@ async fn rejected_link_removes_flag_from_results_table(db: PgPool) {
         room.methodist.get(&results).await.1["rows"][0]["antifraud"],
         false,
         "значок пропал"
+    );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn other_browser_on_same_machine_is_linked_by_hardware_core(db: PgPool) {
+    let state = testing::state(db);
+    let (mut first, first_id) = testing::register(&state, "chrome@example.com").await;
+    let (mut second, second_id) = testing::register(&state, "firefox@example.com").await;
+    signal(&mut first, "marker-chrome", same_machine("chromium")).await;
+    state.clock.advance(Duration::hours(3));
+    signal(&mut second, "marker-firefox", same_machine("firefox")).await;
+    assert_eq!(
+        level(&state, first_id, second_id).await.as_deref(),
+        Some("medium"),
+        "то же устройство"
+    );
+    let found = evidence(&state, first_id, second_id).await;
+    assert_eq!(kinds(&found), ["shared_rare_device"], "основание — общее устройство");
+    assert!(found.to_string().contains("в разных браузерах"), "объяснение: {found}");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn exact_and_hardware_core_match_count_as_one_device(db: PgPool) {
+    let state = testing::state(db);
+    let (mut first, first_id) = testing::register(&state, "a@example.com").await;
+    let (mut second, second_id) = testing::register(&state, "b@example.com").await;
+    signal(&mut first, "marker-a", same_machine("chromium")).await;
+    state.clock.advance(Duration::hours(3));
+    signal(&mut second, "marker-b", same_machine("chromium")).await;
+    signal(&mut second, "marker-b", same_machine("firefox")).await;
+    assert_eq!(level(&state, first_id, second_id).await.as_deref(), Some("medium"), "не высокий");
+    assert_eq!(
+        kinds(&evidence(&state, first_id, second_id).await),
+        ["shared_rare_device"],
+        "одно основание"
+    );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn hardware_core_of_a_computer_class_is_low(db: PgPool) {
+    let state = testing::state(db);
+    let mut ids = Vec::new();
+    for index in 0..5 {
+        let (mut client, user_id) =
+            testing::register(&state, &format!("lab{index}@example.com")).await;
+        state.clock.advance(Duration::hours(1));
+        signal(&mut client, &format!("marker-{index}"), same_machine(&format!("browser-{index}")))
+            .await;
+        ids.push(user_id);
+    }
+    assert_eq!(
+        level(&state, ids[0], ids[1]).await.as_deref(),
+        Some("low"),
+        "одинаковые компьютеры класса"
     );
 }
