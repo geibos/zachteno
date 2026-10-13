@@ -167,7 +167,7 @@ pub(crate) struct SummaryRow {
 
 /// Сводная таблица курса.
 #[derive(Debug, Serialize, ToSchema)]
-pub(crate) struct CourseSummary {
+pub(crate) struct CourseSummaryTable {
     pub tests: Vec<SummaryTest>,
     pub rows: Vec<SummaryRow>,
 }
@@ -188,13 +188,13 @@ struct Student {
 
 /// Студенты × тесты: итоговые баллы (пусто — «нет попыток»).
 #[utoipa::path(get, path = "/api/courses/{course_id}/summary", tag = "reports", params(("course_id" = Uuid, Path), ResultsQuery),
-    responses((status = 200, body = CourseSummary)))]
+    responses((status = 200, body = CourseSummaryTable)))]
 pub(crate) async fn course_summary(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(course_id): Path<Uuid>,
     Query(query): Query<ResultsQuery>,
-) -> ApiResult<Json<CourseSummary>> {
+) -> ApiResult<Json<CourseSummaryTable>> {
     let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_view).await?;
     Ok(Json(build_summary(&state, course_id, &query).await?))
 }
@@ -220,7 +220,7 @@ pub(crate) async fn build_summary(
     state: &AppState,
     course_id: Uuid,
     query: &ResultsQuery,
-) -> ApiResult<CourseSummary> {
+) -> ApiResult<CourseSummaryTable> {
     let tests: Vec<SummaryTest> = sqlx::query_as("SELECT id AS test_id, title FROM tests WHERE course_id = $1 AND status = 'published' ORDER BY position")
         .bind(course_id)
         .fetch_all(&state.db)
@@ -232,7 +232,7 @@ pub(crate) async fn build_summary(
         .await?;
     let finals = collect_finals(state, &tests, query).await?;
     let rows = students.into_iter().map(|student| summary_row(student, &tests, &finals)).collect();
-    Ok(CourseSummary { tests, rows })
+    Ok(CourseSummaryTable { tests, rows })
 }
 
 /// Итоги всех студентов по каждому тесту; при нескольких строках студента остаётся последняя.

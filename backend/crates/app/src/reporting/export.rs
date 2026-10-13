@@ -16,7 +16,7 @@ use crate::clock::MSK_OFFSET_HOURS;
 use crate::error::{ApiResult, AppError};
 use crate::http::extract::ClientIp;
 use crate::reporting::data::{Cell, ResultsQuery};
-use crate::reporting::tables::{self, CourseSummary, ResultsTable, TableRow};
+use crate::reporting::tables::{self, CourseSummaryTable, ResultsTable, TableRow};
 use crate::state::AppState;
 
 #[cfg(test)]
@@ -97,7 +97,7 @@ fn answer_text(cell: &Cell) -> String {
     }
 }
 
-fn summary_records(summary: &CourseSummary) -> Vec<Vec<String>> {
+fn summary_records(summary: &CourseSummaryTable) -> Vec<Vec<String>> {
     let mut header = vec!["Студент".to_owned(), "Email".to_owned()];
     header.extend(summary.tests.iter().map(|test| test.title.clone()));
     let rows = summary.rows.iter().map(|row| {

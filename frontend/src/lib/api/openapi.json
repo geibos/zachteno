@@ -1023,6 +1023,40 @@
         }
       }
     },
+    "/api/courses/{course_id}/streams": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Потоки, назначенные на курс.",
+        "operationId": "course_streams",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CourseStream"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/courses/{course_id}/summary": {
       "get": {
         "tags": [
@@ -1068,7 +1102,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CourseSummary"
+                  "$ref": "#/components/schemas/CourseSummaryTable"
                 }
               }
             }
@@ -2933,6 +2967,28 @@
           }
         }
       },
+      "CourseStream": {
+        "type": "object",
+        "description": "Поток курса для фильтров.",
+        "required": [
+          "stream_id",
+          "name",
+          "members"
+        ],
+        "properties": {
+          "members": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "stream_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "CourseSummary": {
         "type": "object",
         "description": "Курс в списке.",
@@ -2974,6 +3030,28 @@
           },
           "title": {
             "type": "string"
+          }
+        }
+      },
+      "CourseSummaryTable": {
+        "type": "object",
+        "description": "Сводная таблица курса.",
+        "required": [
+          "tests",
+          "rows"
+        ],
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SummaryRow"
+            }
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SummaryTest"
+            }
           }
         }
       },

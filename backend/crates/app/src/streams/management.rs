@@ -244,3 +244,31 @@ pub(crate) async fn remove_member(
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// Поток курса для фильтров.
+#[derive(Debug, Serialize, FromRow, ToSchema)]
+pub(crate) struct CourseStream {
+    pub stream_id: Uuid,
+    pub name: String,
+    pub members: i64,
+}
+
+/// Потоки, назначенные на курс.
+#[utoipa::path(get, path = "/api/courses/{course_id}/streams", tag = "streams", params(("course_id" = Uuid, Path)),
+    responses((status = 200, body = [CourseStream])))]
+pub(crate) async fn course_streams(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(course_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<CourseStream>>> {
+    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_view).await?;
+    let streams = sqlx::query_as(
+        "SELECT s.id AS stream_id, s.name,
+                (SELECT count(*) FROM stream_members m WHERE m.stream_id = s.id AND m.removed_at IS NULL) AS members
+         FROM stream_courses sc JOIN streams s ON s.id = sc.stream_id WHERE sc.course_id = $1 ORDER BY s.name",
+    )
+    .bind(course_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(streams))
+}

@@ -503,6 +503,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/courses/{course_id}/streams": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Потоки, назначенные на курс. */
+        get: operations["course_streams"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/courses/{course_id}/summary": {
         parameters: {
             query?: never;
@@ -1288,6 +1305,14 @@ export interface components {
             /** Format: uuid */
             course_id: string;
         };
+        /** @description Поток курса для фильтров. */
+        CourseStream: {
+            /** Format: int64 */
+            members: number;
+            name: string;
+            /** Format: uuid */
+            stream_id: string;
+        };
         /** @description Курс в списке. */
         CourseSummary: {
             archived: boolean;
@@ -1302,6 +1327,11 @@ export interface components {
             /** Format: int64 */
             tests_count: number;
             title: string;
+        };
+        /** @description Сводная таблица курса. */
+        CourseSummaryTable: {
+            rows: components["schemas"]["SummaryRow"][];
+            tests: components["schemas"]["SummaryTest"][];
         };
         /** @description Созданный объект. */
         Created: {
@@ -2789,6 +2819,27 @@ export interface operations {
             };
         };
     };
+    course_streams: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                course_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CourseStream"][];
+                };
+            };
+        };
+    };
     course_summary: {
         parameters: {
             query?: {
@@ -2808,7 +2859,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CourseSummary"];
+                    "application/json": components["schemas"]["CourseSummaryTable"];
                 };
             };
         };

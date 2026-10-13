@@ -159,3 +159,12 @@ async fn scheduled_close_submits_untimed_but_not_timed(db: PgPool) {
             .unwrap();
     assert!(!submitted, "попытка с лимитом не сдаётся при закрытии по расписанию");
 }
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn course_lists_its_streams(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let (_, streams) = room.methodist.get(&format!("/api/courses/{}/streams", room.course_id)).await;
+    assert_eq!(streams[0]["name"], "ИВТ-21", "поток курса: {streams}");
+    assert_eq!(streams[0]["members"], 1, "один студент");
+}
