@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ChartIcon from '@lucide/svelte/icons/chart-column';
 	import { goto } from '$app/navigation';
 	import LockIcon from '@lucide/svelte/icons/lock';
 	import CopyIcon from '@lucide/svelte/icons/copy';
@@ -190,6 +191,10 @@
 			{#if !test.can_edit}<span class="text-muted-foreground text-sm">· только просмотр</span>{/if}
 		{/snippet}
 		{#snippet actions()}
+			<Button href="/tests/{test.id}/results" variant="outline">
+				<ChartIcon />
+				Результаты
+			</Button>
 			<Button variant="outline" onclick={preview} disabled={previewing || questions.length === 0}>
 				{#if previewing}<LoaderIcon class="animate-spin" />{:else}<EyeIcon />{/if}
 				Предпросмотр

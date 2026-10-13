@@ -85,7 +85,8 @@ export function fromDetail(question: Schema<'QuestionDetail'>): QuestionDraft {
 			key: newKey(),
 			body: option.body,
 			is_correct: option.is_correct,
-			penalty: option.penalty,
+			// Штраф по умолчанию сервер считает сам от текущего веса — его не фиксируем.
+			penalty: option.penalty_custom ? option.penalty : '',
 			pinned: option.pinned,
 			image: imageFrom(option.image)
 		}))

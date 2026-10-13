@@ -11,10 +11,7 @@ class SessionStore {
 	error = $state<string | null>(null);
 	/** Идёт выход: защищённые страницы не должны уводить на /login. */
 	leaving = $state(false);
-	/**
-	 * Назначен ли преподавателем хотя бы одного курса. В `/me` такого признака нет:
-	 * список курсов для пользователя без глобальных ролей содержит только его курсы.
-	 */
+	/** Назначен ли преподавателем хотя бы одного курса (`teaches` из `/me`). */
 	teaches = $state(false);
 
 	#pending: Promise<void> | null = null;
@@ -27,21 +24,6 @@ class SessionStore {
 	get isStaff(): boolean {
 		const roles = this.user?.roles;
 		return Boolean(roles && (roles.methodist || roles.superuser)) || this.teaches;
-	}
-
-	/** Обновляет признак преподавателя; ошибки не мешают работе. */
-	async refreshTeaching(): Promise<void> {
-		const user = this.user;
-		if (!user || user.roles.methodist || user.roles.superuser) {
-			this.teaches = false;
-			return;
-		}
-		try {
-			const courses = await unwrap(api.GET('/api/courses'));
-			if (this.user?.id === user.id) this.teaches = courses.length > 0;
-		} catch {
-			this.teaches = false;
-		}
 	}
 
 	/** Загружает сессию; параллельные вызовы ждут один запрос. */
@@ -58,20 +40,24 @@ class SessionStore {
 			const me = await unwrap(api.GET('/api/auth/me'));
 			this.user = me.user ?? null;
 			this.yandexEnabled = me.yandex_enabled;
+			this.teaches = me.teaches;
 			this.error = null;
 			this.status = 'ready';
-			void this.refreshTeaching();
 		} catch (error) {
 			this.error = errorMessage(error);
 			this.status = 'error';
 		}
 	}
 
-	/** После входа/регистрации сервер уже вернул пользователя. */
+	/**
+	 * После входа/регистрации сервер уже вернул пользователя. Признак `teaches`
+	 * приходит только в `/me` — догружаем его в фоне, экран не мигает.
+	 */
 	setUser(user: CurrentUser | null): void {
 		this.user = user;
 		this.status = 'ready';
-		void this.refreshTeaching();
+		this.teaches = false;
+		if (user) void this.load();
 	}
 
 	/** Выход: сессия удаляется на сервере, затем переход на главную. */

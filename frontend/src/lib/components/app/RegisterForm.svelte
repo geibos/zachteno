@@ -9,6 +9,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { ApiError, api, errorMessage, unwrap, type CurrentUser } from '$lib/api/client';
 	import { session } from '$lib/api/session.svelte';
+	import { isEmailField, sendSignals, TypingRecorder, typingRhythm } from '$lib/signals';
 	import {
 		PASSWORD_MIN,
 		validateEmail,
@@ -26,6 +27,7 @@
 		submitLabel = 'Зарегистрироваться',
 		banner,
 		onpending,
+		onyandex,
 		onregistered
 	}: {
 		trusted?: string | null;
@@ -36,9 +38,14 @@
 		banner?: Snippet;
 		/** Идёт ли отправка — чтобы страница не реагировала на вход раньше времени. */
 		onpending?: (pending: boolean) => void;
+		/** Перед уходом на Яндекс (например, запомнить намерение вступить). */
+		onyandex?: () => void;
 		/** Вызывается после создания учётной записи (сессия уже открыта). */
 		onregistered: (user: CurrentUser) => Promise<void>;
 	} = $props();
+
+	// Ритм набора — только в поле email; пароль не наблюдается никогда.
+	const typing = new TypingRecorder();
 
 	let email = $state('');
 	let name = $state('');
@@ -76,6 +83,7 @@
 				})
 			);
 			session.setUser(user);
+			sendSignals('register', typing.snapshot());
 			toast.success('Учётная запись создана', {
 				description: `Мы отправили письмо для подтверждения на ${user.email}.`
 			});
@@ -90,7 +98,7 @@
 	}
 </script>
 
-<form class="grid gap-4" novalidate onsubmit={submit}>
+<form class="grid gap-4" novalidate onsubmit={submit} use:typingRhythm={{ recorder: typing, accept: isEmailField }}>
 	{@render banner?.()}
 
 	{#if formError}
@@ -153,5 +161,5 @@
 		<span class="text-muted-foreground text-xs">или</span>
 		<Separator class="flex-1" />
 	</div>
-	<YandexButton href={yandexHref} label={yandexLabel} />
+	<YandexButton href={yandexHref} label={yandexLabel} onclick={onyandex} />
 {/if}

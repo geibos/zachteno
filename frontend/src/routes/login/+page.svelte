@@ -11,8 +11,14 @@
 	import { api, errorMessage, unwrap } from '$lib/api/client';
 	import { session } from '$lib/api/session.svelte';
 	import { safeNext, validateEmail } from '$lib/validation';
+	import { oauthErrorMessage } from '$lib/oauth-errors';
+	import { isEmailField, sendSignals, TypingRecorder, typingRhythm } from '$lib/signals';
+
+	// Ритм набора — только в поле email; пароль не наблюдается никогда.
+	const typing = new TypingRecorder();
 
 	const next = $derived(safeNext(page.url.searchParams.get('next')));
+	const oauthError = $derived(oauthErrorMessage(page.url.searchParams.get('oauth_error')));
 	const nextQuery = $derived(next === '/' ? '' : `?next=${encodeURIComponent(next)}`);
 
 	let email = $state('');
@@ -28,7 +34,8 @@
 
 	// Уже вошли — сразу туда, куда шли.
 	$effect(() => {
-		if (session.user && !pending) void goto(next, { replaceState: true });
+		// С ошибкой OAuth не уводим: например, already_linked приходит вошедшему пользователю.
+		if (session.user && !pending && !oauthError) void goto(next, { replaceState: true });
 	});
 
 	async function submit(event: SubmitEvent): Promise<void> {
@@ -42,6 +49,7 @@
 				api.POST('/api/auth/login', { body: { email: email.trim(), password } })
 			);
 			session.setUser(user);
+			sendSignals('login', typing.snapshot());
 			await goto(next, { replaceState: true });
 		} catch (error) {
 			formError = errorMessage(error);
@@ -56,7 +64,20 @@
 </svelte:head>
 
 <AuthCard title="Вход" description="Войдите, чтобы проходить тесты и видеть результаты.">
-	<form class="grid gap-4" novalidate onsubmit={submit}>
+	<form class="grid gap-4" novalidate onsubmit={submit} use:typingRhythm={{ recorder: typing, accept: isEmailField }}>
+		{#if oauthError}
+			<Alert.Root variant="destructive" aria-live="polite">
+				<CircleAlertIcon />
+				<Alert.Title>Вход через Яндекс не выполнен</Alert.Title>
+				<Alert.Description>
+					<p>{oauthError}</p>
+					{#if session.user}
+						<a href="/profile" class="underline underline-offset-3">Вернуться в профиль</a>
+					{/if}
+				</Alert.Description>
+			</Alert.Root>
+		{/if}
+
 		{#if formError}
 			<Alert.Root variant="destructive" aria-live="polite">
 				<CircleAlertIcon />

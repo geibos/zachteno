@@ -12,7 +12,7 @@
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { api, errorMessage, request, unwrap, type Schema } from '$lib/api/client';
+	import { api, errorMessage, unwrap, type Schema } from '$lib/api/client';
 	import { session } from '$lib/api/session.svelte';
 	import { formatDateTime } from '$lib/format';
 	import { Resource } from '$lib/resource.svelte';
@@ -31,7 +31,9 @@
 	});
 
 	// В OpenAPI `search` описан как path-параметр — шлём query напрямую.
-	const users = new Resource(() => request<User[]>('GET', '/api/admin/users', { query: { search: query } }));
+	const users = new Resource(() =>
+		unwrap(api.GET('/api/admin/users', { params: { query: { search: query.trim() || undefined } } }))
+	);
 
 	$effect(() => {
 		void query;

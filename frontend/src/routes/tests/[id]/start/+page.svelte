@@ -17,6 +17,7 @@
 	import { api, errorMessage, unwrap, type Schema } from '$lib/api/client';
 	import { Resource } from '$lib/resource.svelte';
 	import { count, formatDateTime } from '$lib/format';
+	import { sendSignals } from '$lib/signals';
 
 	type DashboardTest = Schema<'DashboardTest'>;
 
@@ -49,6 +50,7 @@
 			const started = await unwrap(
 				api.POST('/api/tests/{test_id}/attempts', { params: { path: { test_id: testId } } })
 			);
+			if (!started.resumed) sendSignals('attempt_start');
 			await goto(`/attempts/${started.attempt_id}`);
 		} catch (error) {
 			startError = errorMessage(error);

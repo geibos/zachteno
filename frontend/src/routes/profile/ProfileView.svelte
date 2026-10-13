@@ -7,6 +7,7 @@
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
 	import { toast } from 'svelte-sonner';
 	import FormField from '$lib/components/app/FormField.svelte';
+	import IdentitiesCard from './IdentitiesCard.svelte';
 	import * as Alert from '$lib/components/ui/alert';
 	import * as Card from '$lib/components/ui/card';
 	import { Badge } from '$lib/components/ui/badge';
@@ -243,6 +244,8 @@
 			</form>
 		</Card.Content>
 	</Card.Root>
+
+	<IdentitiesCard {user} />
 
 	<Card.Root>
 		<Card.Header>

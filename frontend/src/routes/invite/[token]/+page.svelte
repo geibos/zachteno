@@ -14,10 +14,10 @@
 	import { api, errorMessage, unwrap } from '$lib/api/client';
 	import { session } from '$lib/api/session.svelte';
 	import { Resource } from '$lib/resource.svelte';
+	import { consumeJoin, rememberJoin } from '$lib/invite-intent';
+	import { sendSignals } from '$lib/signals';
 
 	const token = $derived(page.params.token ?? '');
-	/** Вернулись со входа: вступаем сразу, без второго нажатия. */
-	const autojoin = $derived(page.url.searchParams.get('autojoin') === '1');
 
 	const invite = new Resource(() =>
 		unwrap(api.GET('/api/invites/{token}', { params: { path: { token } } }))
@@ -27,7 +27,8 @@
 		void invite.reload();
 	});
 
-	const returnPath = $derived(`/invite/${encodeURIComponent(token)}?autojoin=1`);
+	// Возврат после входа — на эту же страницу; вступит только флаг из sessionStorage.
+	const returnPath = $derived(`/invite/${encodeURIComponent(token)}`);
 	const loginHref = $derived(`/login?next=${encodeURIComponent(returnPath)}`);
 	const yandexHref = $derived(
 		`/api/auth/oauth/yandex/start?${new URLSearchParams({ next: returnPath, invite: token }).toString()}`
@@ -36,13 +37,14 @@
 	let joining = $state(false);
 	let registering = $state(false);
 	let joinError = $state<string | null>(null);
-	let autoTried = false;
+	let flagChecked = false;
 
 	async function join(): Promise<void> {
 		joining = true;
 		joinError = null;
 		try {
 			const joined = await unwrap(api.POST('/api/invites/{token}/join', { params: { path: { token } } }));
+			sendSignals('invite');
 			if (joined.already_member) toast.info(`Вы уже состоите в потоке «${joined.stream_name}»`);
 			else toast.success(`Вы вступили в поток «${joined.stream_name}»`);
 			await goto('/', { replaceState: true });
@@ -53,12 +55,20 @@
 		}
 	}
 
+	/**
+	 * Автовступление — только продолжение действия, начатого здесь же («Войти» или Яндекс):
+	 * флаг `zt_join` из sessionStorage должен совпасть с токеном. Пришёл уже вошедшим —
+	 * только кнопка «Вступить» (защита от CSRF через ссылку).
+	 */
 	$effect(() => {
-		if (autojoin && session.user && invite.data && !autoTried && !registering) {
-			autoTried = true;
-			void join();
-		}
+		if (flagChecked || !session.ready || !session.user || registering || !token) return;
+		flagChecked = true;
+		if (consumeJoin(token)) void join();
 	});
+
+	function beforeLeave(): void {
+		rememberJoin(token);
+	}
 </script>
 
 <svelte:head>
@@ -123,6 +133,7 @@
 				{yandexHref}
 				submitLabel="Зарегистрироваться и вступить"
 				onpending={(value) => (registering = value)}
+				onyandex={beforeLeave}
 				onregistered={async () => {
 					await join();
 					registering = false;
@@ -131,7 +142,7 @@
 			{#snippet footer()}
 				<p>
 					Уже есть аккаунт?
-					<a href={loginHref} class="text-primary font-medium underline-offset-3 hover:underline">Войти и вступить</a>
+					<a href={loginHref} onclick={beforeLeave} class="text-primary font-medium underline-offset-3 hover:underline">Войти и вступить</a>
 				</p>
 			{/snippet}
 		</AuthCard>

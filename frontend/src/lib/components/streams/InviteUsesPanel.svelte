@@ -6,7 +6,7 @@
 	import * as Table from '$lib/components/ui/table';
 	import { Label } from '$lib/components/ui/label';
 	import { Button } from '$lib/components/ui/button';
-	import { request, type Schema } from '$lib/api/client';
+	import { api, unwrap, type Schema } from '$lib/api/client';
 	import { formatDateTime } from '$lib/format';
 	import { Resource } from '$lib/resource.svelte';
 
@@ -21,11 +21,18 @@
 	let linkId = $state(ALL);
 	let userId = $state(ALL);
 
-	// В OpenAPI фильтры описаны как path-параметры — шлём query напрямую.
 	const uses = new Resource(() =>
-		request<Schema<'InviteUse'>[]>('GET', `/api/streams/${encodeURIComponent(streamId)}/invite-uses`, {
-			query: { link_id: linkId === ALL ? null : linkId, user_id: userId === ALL ? null : userId }
-		})
+		unwrap(
+			api.GET('/api/streams/{stream_id}/invite-uses', {
+				params: {
+					path: { stream_id: streamId },
+					query: {
+						link_id: linkId === ALL ? undefined : linkId,
+						user_id: userId === ALL ? undefined : userId
+					}
+				}
+			})
+		)
 	);
 
 	$effect(() => {

@@ -4,6 +4,7 @@
 	import * as Tabs from '$lib/components/ui/tabs';
 	import UsersPanel from '$lib/components/admin/UsersPanel.svelte';
 	import TrustedLinksPanel from '$lib/components/admin/TrustedLinksPanel.svelte';
+	import AuditLog from '$lib/components/audit/AuditLog.svelte';
 
 	let tab = $state('users');
 </script>
@@ -24,10 +25,14 @@
 					<Tabs.List>
 						<Tabs.Trigger value="users">Пользователи</Tabs.Trigger>
 						<Tabs.Trigger value="trusted">Доверенные ссылки</Tabs.Trigger>
+						<Tabs.Trigger value="audit">Аудит</Tabs.Trigger>
 					</Tabs.List>
 				</div>
 				<Tabs.Content value="users"><UsersPanel /></Tabs.Content>
 				<Tabs.Content value="trusted"><TrustedLinksPanel /></Tabs.Content>
+				<Tabs.Content value="audit">
+					{#if tab === 'audit'}<AuditLog />{/if}
+				</Tabs.Content>
 			</Tabs.Root>
 		</div>
 	{/snippet}

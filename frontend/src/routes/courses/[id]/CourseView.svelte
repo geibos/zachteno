@@ -8,6 +8,10 @@
 	import LockIcon from '@lucide/svelte/icons/lock';
 	import ClipboardListIcon from '@lucide/svelte/icons/clipboard-list';
 	import LoaderIcon from '@lucide/svelte/icons/loader-circle';
+	import TableIcon from '@lucide/svelte/icons/table-2';
+	import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert';
+	import ScrollTextIcon from '@lucide/svelte/icons/scroll-text';
+	import ChartIcon from '@lucide/svelte/icons/chart-column';
 	import { toast } from 'svelte-sonner';
 	import * as Card from '$lib/components/ui/card';
 	import * as Dialog from '$lib/components/ui/dialog';
@@ -160,6 +164,14 @@
 		{/if}
 	{/snippet}
 </PageHeader>
+
+<nav aria-label="Отчёты курса" class="flex flex-wrap gap-2">
+	<Button href="/courses/{course.id}/summary" variant="secondary" size="sm"><TableIcon />Сводная таблица</Button>
+	<Button href="/courses/{course.id}/antifraud" variant="secondary" size="sm"><ShieldAlertIcon />Связанные аккаунты</Button>
+	{#if course.can_edit}
+		<Button href="/courses/{course.id}/audit" variant="secondary" size="sm"><ScrollTextIcon />Журнал действий</Button>
+	{/if}
+</nav>
 
 <Card.Root>
 	<Card.Header>

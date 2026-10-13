@@ -23,6 +23,7 @@
 	import { EMPTY_ANSWER, fromSaved, isAnswered, toPayload, type LocalAnswer } from '$lib/attempt/answers';
 	import { count, formatDuration } from '$lib/format';
 	import { cn } from '$lib/utils';
+	import { sendSignals, TypingRecorder, typingRhythm } from '$lib/signals';
 
 	let { initial }: { initial: Schema<'AttemptView'> } = $props();
 
@@ -101,10 +102,16 @@
 		toast.error(message);
 	}
 
+	// Ритм набора — только в полях свободного ответа.
+	const typing = new TypingRecorder();
+	const isFreeTextField = (target: EventTarget) => (target as Element).tagName === 'TEXTAREA';
+
 	function change(q: Schema<'RunnerQuestion'>, answer: LocalAnswer, debounce: boolean): void {
 		if (finishing || timeOver) return;
 		answers[q.id] = answer;
 		queue.set(q.id, toPayload(q.choice, answer), debounce ? 800 : 0);
+		// Сигнал «answer» — не чаще раза в минуту; при пропуске ритм копится дальше.
+		if (!view.is_preview && sendSignals('answer', typing.snapshot())) typing.reset();
 	}
 
 	// --- события вкладки ---
@@ -240,7 +247,10 @@
 	});
 </script>
 
-<div class="mx-auto grid w-full max-w-3xl grid-cols-1 gap-4 px-4 pt-4 pb-24 sm:px-6">
+<div
+	class="mx-auto grid w-full max-w-3xl grid-cols-1 gap-4 px-4 pt-4 pb-24 sm:px-6"
+	use:typingRhythm={{ recorder: typing, accept: isFreeTextField }}
+>
 	{#if view.is_preview}
 		<Alert.Root class="border-primary/30 bg-primary/5">
 			<EyeIcon class="text-primary" />
