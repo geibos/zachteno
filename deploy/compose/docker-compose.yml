@@ -1,5 +1,6 @@
 # «Зачтено»: приложение, PostgreSQL с WAL-G, Garage для картинок и отдельный Garage для бэкапов.
 # Наружу — только app (за любым TLS-прокси); база и хранилища — во внутренних сетях.
+# Миграции применяет разовый migrate: пароль владельца схемы есть только у него, не у app.
 # Особенности конкретного стенда (метки прокси, внешние сети) — в docker-compose.override.yml рядом.
 name: zachteno
 
@@ -18,9 +19,23 @@ x-walg-env: &walg-env
   PGHOST: /var/run/postgresql
 
 services:
+  migrate:
+    image: zachteno-app:latest
+    build: &app-build { context: ./src, dockerfile: deploy/docker/app.Dockerfile }
+    command: ["migrate"]
+    restart: "no"
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      MIGRATION_DATABASE_URL: postgres://zachteno_owner:${ZACHTENO_OWNER_PASSWORD:?}@postgres:5432/zachteno
+      RUST_LOG: info
+    networks: [internal]
+    depends_on:
+      postgres: { condition: service_healthy }
+
   app:
     image: zachteno-app:latest
-    build: { context: ./src, dockerfile: deploy/docker/app.Dockerfile }
+    build: *app-build
     container_name: zachteno-app
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
@@ -50,8 +65,8 @@ services:
       YANDEX_CLIENT_SECRET: ${YANDEX_CLIENT_SECRET:-}
       PUBLIC_URL: ${PUBLIC_URL:?}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      # Без MIGRATION_DATABASE_URL: serve только проверяет, что migrate применил все миграции.
       DATABASE_URL: postgres://zachteno_app:${ZACHTENO_APP_PASSWORD:?}@postgres:5432/zachteno
-      MIGRATION_DATABASE_URL: postgres://zachteno_owner:${ZACHTENO_OWNER_PASSWORD:?}@postgres:5432/zachteno
       S3_ENDPOINT: http://garage:3900
       S3_REGION: garage
       S3_BUCKET: attachments
@@ -62,6 +77,7 @@ services:
     networks: [internal]
     depends_on:
       postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       garage: { condition: service_started }
 
   postgres:

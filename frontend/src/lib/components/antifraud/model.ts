@@ -23,7 +23,8 @@ export const EVIDENCE_LABELS: Record<EvidenceKind, string> = {
 	typing_similarity: 'похожий ритм набора',
 	registration_pattern: 'похожая регистрация',
 	shared_public_network: 'общая публичная сеть',
-	transitive_device: 'связь через общее устройство с третьим аккаунтом'
+	transitive_device: 'связь через общее устройство с третьим аккаунтом',
+	same_hardware: 'тот же компьютер в другом браузере (слабый признак)'
 };
 
 export function evidenceLabel(kind: string): string {

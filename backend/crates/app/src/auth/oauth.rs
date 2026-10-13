@@ -22,7 +22,6 @@ use crate::config::OAuthClient;
 use crate::error::{ApiResult, AppError};
 use crate::http::extract::{ClientIp, MaybeUser};
 use crate::state::AppState;
-use crate::streams::invites::join_by_hash;
 use crate::tokens::{self, IssuedToken};
 
 #[cfg(test)]
@@ -43,8 +42,6 @@ pub(crate) struct StartQuery {
     pub next: Option<String>,
     /// Токен ссылки доверенной регистрации.
     pub trusted: Option<String>,
-    /// Токен приглашения в поток.
-    pub invite: Option<String>,
     /// `link` — привязать Яндекс ID к текущей учётке.
     pub intent: Option<String>,
 }
@@ -95,6 +92,10 @@ pub(crate) async fn start(
 
 /// Сохраняет незавершённый вход.
 ///
+/// Приглашения в поток здесь нет: вступление по GET-ссылке на `start` позволяло записать
+/// жертву в чужой поток (CSRF). Колонка `invite_hash` остаётся в схеме, но не заполняется —
+/// в поток вступают только явным POST со страницы приглашения.
+///
 /// cancel-safe: yes — один INSERT.
 async fn save_state(
     state: &AppState,
@@ -103,14 +104,13 @@ async fn save_state(
     (state_token, verifier): (&IssuedToken, &str),
 ) -> ApiResult<()> {
     let _saved = sqlx::query(
-        "INSERT INTO oauth_states (state_hash, provider, pkce_verifier, link_user_id, invite_hash, trusted_hash, next_path, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO oauth_states (state_hash, provider, pkce_verifier, link_user_id, trusted_hash, next_path, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&state_token.hash)
     .bind(PROVIDER)
     .bind(verifier)
     .bind(link_user)
-    .bind(query.invite.as_deref().map(tokens::digest))
     .bind(query.trusted.as_deref().map(tokens::digest))
     .bind(safe_next(query.next.as_deref()))
     .bind(state.clock.now())
@@ -172,7 +172,6 @@ pub(crate) struct CallbackQuery {
 struct PendingLogin {
     pkce_verifier: String,
     link_user_id: Option<Uuid>,
-    invite_hash: Option<Vec<u8>>,
     trusted_hash: Option<Vec<u8>>,
     next_path: Option<String>,
     created_at: time::OffsetDateTime,
@@ -283,7 +282,7 @@ async fn take_pending(
 ) -> Result<Option<PendingLogin>, sqlx::Error> {
     sqlx::query_as(
         "DELETE FROM oauth_states WHERE state_hash = $1 AND provider = $2
-         RETURNING pkce_verifier, link_user_id, invite_hash, trusted_hash, next_path, created_at",
+         RETURNING pkce_verifier, link_user_id, trusted_hash, next_path, created_at",
     )
     .bind(tokens::digest(raw_state))
     .bind(PROVIDER)
@@ -358,9 +357,6 @@ async fn sign_in(
     let mut tx = state.db.begin().await.map_err(internal)?;
     let user_id = resolve_user(&mut tx, profile, pending, ip).await?;
     ensure_not_blocked(&mut tx, user_id).await?;
-    if let Some(hash) = &pending.invite_hash {
-        join_by_hash(&mut tx, hash, user_id, (ip, state.clock.now())).await.map_err(internal)?;
-    }
     let cookie = session::start(&mut *tx, user_id, &ClientMeta::new(state, ip, headers))
         .await
         .map_err(internal)?;

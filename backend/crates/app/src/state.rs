@@ -36,6 +36,8 @@ pub(crate) struct AppState {
     pub blobs: Blobs,
     /// Загрузки картинок на пользователя: 60 подряд, дальше одна в 2 с.
     pub uploads: Arc<Limiter<uuid::Uuid>>,
+    /// Сигналы антифрода на пользователя: 30 подряд, дальше один в 2 с (лишние отбрасываются).
+    pub signals: Arc<Limiter<uuid::Uuid>>,
     /// Таблица IP → ASN.
     pub asn: Arc<AsnTable>,
     /// Не больше двух картинок обрабатываются одновременно.
@@ -61,6 +63,7 @@ impl AppState {
             http_client,
             blobs,
             uploads: Arc::new(Limiter::new(Duration::from_secs(2), 60)),
+            signals: Arc::new(Limiter::new(Duration::from_secs(2), 30)),
             asn: Arc::new(asn),
             image_permits: Arc::new(Semaphore::new(2)),
         })

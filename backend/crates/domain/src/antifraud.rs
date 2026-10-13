@@ -35,6 +35,10 @@ pub enum EvidenceKind {
     /// Транзитивная связь через общее устройство: оба аккаунта делили браузер или редкое
     /// устройство с третьим аккаунтом. Уровень — самого слабого ребра пути ([`transitive_level`]).
     TransitiveDevice,
+    /// Совпало только аппаратное ядро отпечатка (экран, процессор, ОС, часовой пояс): похоже на
+    /// тот же компьютер в другом браузере, но так же выглядят и одинаковые модели ноутбуков,
+    /// поэтому сигнал слабый и в граф устройств не входит.
+    SameHardware,
     /// Общая домашняя сеть в разные дни.
     HomeNetwork,
     /// Один вышел — другой вошёл из той же сети или с того же устройства.
@@ -96,6 +100,7 @@ impl LevelTable {
             EvidenceKind::IdenticalFreeText | EvidenceKind::MatchingMistakes => self.answers,
             EvidenceKind::TypingSimilarity => self.typing,
             EvidenceKind::SharedCommonDevice
+            | EvidenceKind::SameHardware
             | EvidenceKind::TransitiveDevice
             | EvidenceKind::RegistrationPattern
             | EvidenceKind::SharedPublicNetwork => LinkLevel::Low,

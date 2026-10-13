@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::admin::bootstrap_superuser;
 use crate::auth::account::find_for_login;
-use crate::config::Config;
+use crate::config::{Config, migration_url_from_env};
 use crate::seed::Seeded;
 use crate::state::AppState;
 use crate::{antifraud, database, http, mail, ops, seed, sweeper};
@@ -29,9 +29,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Применить миграции и запустить HTTP-сервер.
+    /// Запустить HTTP-сервер. С `MIGRATION_DATABASE_URL` сначала применяет миграции,
+    /// без неё — проверяет, что все они уже применены.
     Serve,
-    /// Только применить миграции.
+    /// Только применить миграции (нужна лишь `MIGRATION_DATABASE_URL`).
     Migrate,
     #[command(about = "Вывести документ OpenAPI (для генерации типов фронтенда)")]
     Openapi,
@@ -70,14 +71,15 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         return healthcheck(url).await;
     }
     init_tracing();
-    let config = Config::from_env()?;
     match cli.command {
-        Command::Serve => serve(config).await,
-        Command::Migrate => database::migrate(&config).await,
+        Command::Serve => serve(Config::from_env()?).await,
+        Command::Migrate => database::migrate(&migration_url_from_env()?).await,
         Command::Openapi => print_openapi(),
         Command::Healthcheck { .. } => Ok(()),
-        Command::CreateSuperuser { email, name } => create_superuser(config, &email, &name).await,
-        Command::SeedPdd { dir, owner } => seed_pdd(config, &dir, &owner).await,
+        Command::CreateSuperuser { email, name } => {
+            create_superuser(Config::from_env()?, &email, &name).await
+        }
+        Command::SeedPdd { dir, owner } => seed_pdd(Config::from_env()?, &dir, &owner).await,
     }
 }
 
@@ -95,8 +97,8 @@ fn print_openapi() -> anyhow::Result<()> {
 }
 
 async fn create_superuser(config: Config, email: &str, name: &str) -> anyhow::Result<()> {
-    database::migrate(&config).await?;
     let db = database::connect(&config).await?;
+    database::prepare(&config, &db).await?;
     let state = AppState::new(config, db)?;
     let link = bootstrap_superuser(&state, email, name).await?;
     let mut out = stdout().lock();
@@ -109,8 +111,8 @@ async fn create_superuser(config: Config, email: &str, name: &str) -> anyhow::Re
 }
 
 async fn seed_pdd(config: Config, dir: &Path, owner: &str) -> anyhow::Result<()> {
-    database::migrate(&config).await?;
     let db = database::connect(&config).await?;
+    database::prepare(&config, &db).await?;
     let state = AppState::new(config, db)?;
     let owner_row = find_for_login(&state.db, owner)
         .await?
@@ -150,8 +152,8 @@ fn init_tracing() {
 
 /// cancel-safe: yes — завершается по Ctrl+C/SIGTERM с корректной остановкой.
 async fn serve(config: Config) -> anyhow::Result<()> {
-    database::migrate(&config).await?;
     let db = database::connect(&config).await?;
+    database::prepare(&config, &db).await?;
     let bind = config.http.bind;
     let metrics_bind = config.http.metrics_bind;
     let state = AppState::new(config, db)?;

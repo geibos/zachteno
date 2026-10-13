@@ -150,7 +150,7 @@ async fn trusted_registration(state: &AppState, admin: &mut Client) {
 
 /// Преподаватель, клоны курса и теста, выгрузка CSV.
 async fn course_actions(state: &AppState, room: &mut Classroom) {
-    let _teacher = testing::register(state, "teacher@example.com").await;
+    let _teacher = testing::register_verified(state, "teacher@example.com").await;
     let csv = room.methodist.get_bytes(&format!("/api/tests/{}/results.csv", room.test_id)).await;
     assert_eq!(csv.0, StatusCode::OK, "выгрузка");
     let (course, test) = (room.course_id.clone(), room.test_id.clone());

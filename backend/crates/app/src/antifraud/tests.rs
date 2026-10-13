@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 
 use axum::http::StatusCode;
 use serde_json::{Value as Json, json};
@@ -9,6 +10,7 @@ use uuid::Uuid;
 
 use crate::antifraud::asn::AsnTable;
 use crate::antifraud::drain;
+use crate::http::limiter::Limiter;
 use crate::state::AppState;
 use crate::sweeper;
 use crate::testing::{self, Classroom, Client};
@@ -425,14 +427,10 @@ async fn other_browser_on_same_machine_is_linked_by_hardware_core(db: PgPool) {
     signal(&mut first, "marker-chrome", same_machine("chromium")).await;
     state.clock.advance(Duration::hours(3));
     signal(&mut second, "marker-firefox", same_machine("firefox")).await;
-    assert_eq!(
-        level(&state, first_id, second_id).await.as_deref(),
-        Some("medium"),
-        "то же устройство"
-    );
+    assert_eq!(level(&state, first_id, second_id).await.as_deref(), Some("low"), "слабый сигнал");
     let found = evidence(&state, first_id, second_id).await;
-    assert_eq!(kinds(&found), ["shared_rare_device"], "основание — общее устройство");
-    assert!(found.to_string().contains("в разных браузерах"), "объяснение: {found}");
+    assert_eq!(kinds(&found), ["same_hardware"], "основание — то же железо");
+    assert!(found.to_string().contains("в другом браузере"), "объяснение: {found}");
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -469,4 +467,27 @@ async fn hardware_core_of_a_computer_class_is_low(db: PgPool) {
         Some("low"),
         "одинаковые компьютеры класса"
     );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn signals_over_the_limit_are_dropped_silently(db: PgPool) {
+    let mut state = testing::state(db);
+    state.signals = Arc::new(Limiter::new(StdDuration::from_secs(60), 2));
+    let (mut client, _id) = testing::register(&state, "fast@example.com").await;
+    for _ in 0..4 {
+        signal(&mut client, "marker", device("gpu")).await;
+    }
+    let stored: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM signals").fetch_one(&state.db).await.unwrap();
+    assert_eq!(stored, 2, "сверх лимита — 204 без записи");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn oversized_signal_body_is_rejected(db: PgPool) {
+    let state = testing::state(db);
+    let (mut client, _id) = testing::register(&state, "big@example.com").await;
+    let body =
+        json!({ "event": "login", "marker": "m", "browser": { "ua": "x".repeat(70 * 1024) } });
+    let (status, _) = client.post("/api/signals", body).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "тело больше 64 КиБ");
 }

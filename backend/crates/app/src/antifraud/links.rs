@@ -190,23 +190,16 @@ fn describe_mistakes(hit: &Hit) -> Described {
     })
 }
 
-/// Совпадение аппаратного ядра: редкое сочетание или распространённое.
-const DESCRIBE_SIMILAR_DEVICE: Describe = |hit| {
-    Some(if hit.extra <= RARE_DEVICE_USERS {
-        (
-            EvidenceKind::SharedRareDevice,
-            "одно и то же устройство в разных браузерах: совпали экран, процессор, ОС и часовой пояс"
-                .to_owned(),
-        )
-    } else {
-        (
-            EvidenceKind::SharedCommonDevice,
-            format!(
-                "одинаковые экран, процессор и ОС в разных браузерах — распространённое сочетание, у {} пользователей",
-                hit.extra
-            ),
-        )
-    })
+/// Совпадение аппаратного ядра при разных отпечатках.
+const DESCRIBE_SAME_HARDWARE: Describe = |hit| {
+    Some((
+        EvidenceKind::SameHardware,
+        format!(
+            "похоже на тот же компьютер в другом браузере: совпали экран, процессор, ОС и часовой пояс \
+             (такое сочетание у {} пользователей)",
+            hit.extra
+        ),
+    ))
 };
 
 /// Добавляет совпадения аппаратного ядра тем, у кого ещё нет основания «общее устройство»:
@@ -221,7 +214,7 @@ fn add_similar_devices(found: &mut Found, hits: Vec<Hit>) {
         .into_iter()
         .filter(|hit| !found.get(&hit.other).is_some_and(|evidence| has_device(evidence)))
         .collect();
-    add(found, fresh, DESCRIBE_SIMILAR_DEVICE);
+    add(found, fresh, DESCRIBE_SAME_HARDWARE);
 }
 
 /// Запрос совпадений и его толкование.

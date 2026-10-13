@@ -18,6 +18,9 @@ pub(crate) enum Purpose {
     SetPassword,
 }
 
+/// Самый долгий срок жизни токена: письмо со ссылкой старше этого хранить незачем.
+pub(crate) const LONGEST_LIFETIME: Duration = Duration::hours(24);
+
 impl Purpose {
     const fn name(self) -> &'static str {
         match self {
@@ -29,7 +32,7 @@ impl Purpose {
 
     const fn lifetime(self) -> Duration {
         match self {
-            Self::VerifyEmail | Self::SetPassword => Duration::hours(24),
+            Self::VerifyEmail | Self::SetPassword => LONGEST_LIFETIME,
             Self::ResetPassword => Duration::hours(1),
         }
     }

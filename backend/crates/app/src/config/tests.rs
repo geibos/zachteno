@@ -50,3 +50,12 @@ fn short_signal_key_is_rejected() {
     let error = Config::from_vars(&|name| known.get(name).cloned()).unwrap_err().to_string();
     assert!(error.contains("короче 32 байт"), "короткий ключ: {error}");
 }
+
+#[test]
+fn server_config_loads_without_owner_role() {
+    let config = load_without("MIGRATION_DATABASE_URL").unwrap();
+    assert!(
+        config.database.migrations.is_none(),
+        "без роли-владельца сервер только проверяет схему"
+    );
+}

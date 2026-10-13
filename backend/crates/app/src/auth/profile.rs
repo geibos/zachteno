@@ -11,11 +11,12 @@ use uuid::Uuid;
 
 use crate::audit::AuditEntry;
 use crate::auth::account;
+use crate::auth::login::begin_attempt;
 use crate::auth::password::{self, Verification};
 use crate::auth::session::{self, CurrentUser};
 use crate::error::{ApiResult, AppError};
 use crate::http::extract::ClientIp;
-use crate::state::AppState;
+use crate::state::{AppState, throttle};
 
 /// Смена или первое задание пароля.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -28,14 +29,18 @@ pub(crate) struct ChangePasswordRequest {
 }
 
 /// Меняет пароль и завершает остальные сессии.
+///
+/// Лимит по IP — как у входа, а неудачные проверки текущего пароля идут в общий со входом
+/// счётчик по email: украденная сессия не даёт подбирать пароль и нагружать Argon2.
 #[utoipa::path(post, path = "/api/profile/password", tag = "profile", request_body = ChangePasswordRequest,
-    responses((status = 204), (status = 400), (status = 401)))]
+    responses((status = 204), (status = 400), (status = 401), (status = 429)))]
 pub(crate) async fn change_password(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     user: CurrentUser,
     Json(request): Json<ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
+    throttle(&state.limits.login, ip)?;
     password::check_strength(&request.replacement)
         .map_err(|weak| AppError::BadRequest(weak.to_string()))?;
     if user.has_password {
@@ -54,12 +59,21 @@ pub(crate) async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Проверяет текущий пароль; неудача остаётся в счётчике, успех его сбрасывает.
+///
+/// cancel-safe: yes — только чтение и проверка хеша; при отмене попытка остаётся неудачной,
+/// как и при обычном отказе.
 async fn verify_current(state: &AppState, user: &CurrentUser, current: String) -> ApiResult<()> {
+    let key = user.email.to_ascii_lowercase();
+    begin_attempt(state, &key)?;
     let row =
         account::find_for_login(&state.db, &user.email).await?.ok_or(AppError::Unauthorized)?;
     let stored = row.stored_hash().ok_or(AppError::InvalidCredentials)?;
     match state.hasher.verify(current, stored).await? {
-        Verification::Valid | Verification::ValidNeedsRehash => Ok(()),
+        Verification::Valid | Verification::ValidNeedsRehash => {
+            state.login_failures.reset(&key);
+            Ok(())
+        }
         Verification::Invalid => Err(AppError::InvalidCredentials),
     }
 }

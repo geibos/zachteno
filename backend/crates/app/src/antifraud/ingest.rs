@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::time::Instant;
 
 use axum::Json;
 use axum::extract::State;
@@ -148,6 +149,11 @@ pub(crate) async fn submit(
     Json(input): Json<SignalInput>,
 ) -> ApiResult<StatusCode> {
     input.validate()?;
+    // Сверх лимита сигнал просто не записывается: клиент шлёт их «отправил и забыл»,
+    // и раннер не должен видеть ошибок из-за частых ответов.
+    if state.signals.check(&user.id, Instant::now()).is_err() {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let mut tx = state.db.begin().await?;
     record(&state, &mut tx, user.id, (&input, ip)).await?;
     enqueue_recompute(&mut tx, user.id, state.clock.now()).await?;

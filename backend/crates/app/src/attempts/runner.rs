@@ -74,11 +74,16 @@ const fn navigation_of(test: &TestRow) -> Navigation {
 pub(crate) enum ReadMode {
     /// Просто прочитать.
     Plain,
-    /// Заблокировать строку до конца транзакции вызывающего.
+    /// Заблокировать строку до конца транзакции вызывающего — чтобы изменить попытку.
     ForUpdate,
 }
 
-/// Своя попытка пользователя (чужая — «не найдено»).
+/// Попытка в потоке, из которого студента исключили, не меняется: ни ответов, ни сдачи.
+const NOT_REMOVED: &str = " AND NOT EXISTS (SELECT 1 FROM stream_members m
+    WHERE m.stream_id = attempts.stream_id AND m.user_id = attempts.user_id AND m.removed_at IS NOT NULL)";
+
+/// Своя попытка пользователя (чужая — «не найдено»). Для изменения ([`ReadMode::ForUpdate`])
+/// попытка исключённого из потока студента тоже «не найдена»; прочитать её он по-прежнему может.
 ///
 /// cancel-safe: yes — только чтение (или блокировка строки в транзакции вызывающего).
 pub(crate) async fn own_attempt(
@@ -87,12 +92,13 @@ pub(crate) async fn own_attempt(
     attempt_id: Uuid,
     mode: ReadMode,
 ) -> ApiResult<AttemptRow> {
-    let lock = match mode {
-        ReadMode::Plain => "",
-        ReadMode::ForUpdate => " FOR UPDATE",
+    let (member, lock) = match mode {
+        ReadMode::Plain => ("", ""),
+        ReadMode::ForUpdate => (NOT_REMOVED, " FOR UPDATE"),
     };
-    let query =
-        format!("SELECT {ATTEMPT_COLUMNS} FROM attempts WHERE id = $1 AND user_id = $2{lock}");
+    let query = format!(
+        "SELECT {ATTEMPT_COLUMNS} FROM attempts WHERE id = $1 AND user_id = $2{member}{lock}"
+    );
     sqlx::query_as(sqlx::AssertSqlSafe(query))
         .bind(attempt_id)
         .bind(user.id)

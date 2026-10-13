@@ -8,17 +8,21 @@ mod review;
 #[cfg(test)]
 mod tests;
 
+use axum::extract::DefaultBodyLimit;
 use tokio::time::{sleep, timeout};
-use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouterExt as _};
 use utoipa_axum::routes;
 
 use crate::jobs::{self, JobKind};
 use crate::state::AppState;
 
+/// Сигналы весят несколько килобайт; глобальный лимит тела рассчитан на картинки.
+const MAX_SIGNAL_BYTES: usize = 64 * 1024;
+
 /// Маршруты антифрода.
 pub(crate) fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(ingest::submit))
+        .routes(routes!(ingest::submit).layer(DefaultBodyLimit::max(MAX_SIGNAL_BYTES)))
         .routes(routes!(review::course_links))
         .routes(routes!(review::decide))
 }

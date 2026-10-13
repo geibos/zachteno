@@ -129,8 +129,14 @@ async fn last_login_method_cannot_be_unlinked(db: PgPool) {
     );
 }
 
+/// Участники потока стенда.
+async fn members(room: &mut testing::Classroom) -> usize {
+    let (_, stream) = room.methodist.get(&format!("/api/streams/{}", room.stream_id)).await;
+    stream["members"].as_array().map_or(0, Vec::len)
+}
+
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
-async fn yandex_registration_by_trusted_link_and_invite(db: PgPool) {
+async fn yandex_registration_by_trusted_link_returns_to_invite_page(db: PgPool) {
     let state = testing::state_with_yandex(db, &mock_yandex("new@yandex.ru").await);
     let mut room = testing::Classroom::new(&state, 1, json!({})).await;
     let (mut admin, admin_id) = testing::register(&state, "admin@example.com").await;
@@ -138,16 +144,39 @@ async fn yandex_registration_by_trusted_link_and_invite(db: PgPool) {
     let (_, link) = admin.post("/api/admin/trusted-links", json!({})).await;
     let trusted = link["url"].as_str().unwrap().split("trusted=").nth(1).unwrap().to_owned();
     let mut visitor = Client::new(&state);
-    let state_token =
-        begin(&mut visitor, &format!("?trusted={trusted}&invite={}", room.invite_token)).await;
-    let _done = finish(&mut visitor, &state_token).await;
+    let invite_page = format!("/invite/{}", room.invite_token);
+    let state_token = begin(&mut visitor, &format!("?trusted={trusted}&next={invite_page}")).await;
+    assert_eq!(finish(&mut visitor, &state_token).await, invite_page, "назад на приглашение");
     assert_eq!(
         me(&mut visitor).await["user"]["trusted_registration"],
         true,
         "доверенная регистрация"
     );
-    let (_, stream) = room.methodist.get(&format!("/api/streams/{}", room.stream_id)).await;
-    assert_eq!(stream["members"].as_array().map(Vec::len), Some(2), "сразу в потоке");
+    assert_eq!(members(&mut room).await, 1, "в поток вступают только явным действием на странице");
+    let join = format!("/api/invites/{}/join", room.invite_token);
+    assert_eq!(visitor.post(&join, json!({})).await.0, StatusCode::OK, "явное вступление");
+    assert_eq!(members(&mut room).await, 2, "теперь в потоке");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn invite_in_oauth_start_link_does_not_enroll(db: PgPool) {
+    let state = testing::state_with_yandex(db, &mock_yandex("victim@yandex.ru").await);
+    let mut room = testing::Classroom::new(&state, 1, json!({})).await;
+    // Ссылка злоумышленника: жертва просто переходит по GET, ничего не нажимая на странице приглашения.
+    let mut victim = Client::new(&state);
+    let state_token = begin(&mut victim, &format!("?invite={}", room.invite_token)).await;
+    assert_eq!(finish(&mut victim, &state_token).await, "/", "вход выполнен");
+    assert_eq!(me(&mut victim).await["user"]["email"], "victim@yandex.ru", "жертва вошла");
+    assert_eq!(members(&mut room).await, 1, "жертву не записали в чужой поток");
+    let traces: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM invite_link_uses u JOIN users p ON p.id = u.user_id WHERE p.email = $1)
+              + (SELECT count(*) FROM oauth_states WHERE invite_hash IS NOT NULL)",
+    )
+    .bind("victim@yandex.ru")
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(traces, 0, "ни перехода по ссылке, ни сохранённого приглашения");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # Развёртывание через Docker Compose
 
-Стенд из пяти сервисов: `app` (бэкенд со встроенным фронтендом), `postgres` (PostgreSQL 17 с WAL-G), `garage` (картинки), `backup-garage` (хранилище бэкапов на отдельном диске) и разовый `backup` (WAL-G, rclone). Наружу публикуется только `app`; TLS и домен — у вашего обратного прокси (Caddy, nginx, Traefik и т. п.).
+Стенд из пяти сервисов: `app` (бэкенд со встроенным фронтендом), `postgres` (PostgreSQL 17 с WAL-G), `garage` (картинки), `backup-garage` (хранилище бэкапов на отдельном диске) и разовые `migrate` (миграции схемы) и `backup` (WAL-G, rclone). Пароль владельца схемы (`ZACHTENO_OWNER_PASSWORD`) получает только `migrate`; у `app` — лишь роль с DML, и при старте он только проверяет, что все миграции применены. Наружу публикуется только `app`; TLS и домен — у вашего обратного прокси (Caddy, nginx, Traefik и т. п.).
 
 ```
 <ZACHTENO_HOME>/
@@ -24,9 +24,10 @@
 4. `docker compose build && docker compose up -d postgres garage backup-garage`, затем инициализация хранилищ:
    - `src/deploy/garage/init.sh docker-compose.yml garage "$S3_ACCESS_KEY_ID" "$S3_SECRET_ACCESS_KEY" attachments`
    - `src/deploy/garage/init.sh docker-compose.yml backup-garage "$BACKUP_S3_KEY_ID" "$BACKUP_S3_SECRET" pg-backups attachments-mirror attachments-history`
-5. `docker compose up -d app` и первый суперпользователь: `docker compose run --rm app create-superuser --email you@example.com` (команда выведет ссылку для пароля).
+5. `docker compose up -d app` — перед ним compose разово запустит `migrate` и стартует `app`, только если миграции прошли (`docker compose logs migrate` — их журнал). Первый суперпользователь: `docker compose run --rm app create-superuser --email you@example.com` (команда выведет ссылку для пароля).
 6. Демо-курс ПДД (необязательно): `git clone --depth 1 https://github.com/etspring/pdd_russia.git data/pdd` и `docker compose run --rm -v "$PWD/data/pdd:/pdd:ro" app seed-pdd --dir /pdd --owner you@example.com`.
 7. Бэкапы по таймерам systemd (пользовательские): `cp src/deploy/compose/systemd/* ~/.config/systemd/user/`, при другом `ZACHTENO_HOME` поправьте пути в копиях, затем `systemctl --user daemon-reload && systemctl --user enable --now zachteno-backup.timer zachteno-restore-check.timer zachteno-asn.timer`.
+8. Обновление: `git -C src pull && docker compose build && docker compose up -d app` — новые миграции применит `migrate`; если он упал, `app` не перезапустится со старой схемой.
 
 ## Пример override для Traefik
 

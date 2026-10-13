@@ -1,7 +1,8 @@
 use std::io::Cursor;
 use std::time::{Duration as StdDuration, Instant};
 
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode, header};
+use axum::response::Response;
 use serde_json::{Value as Json, json};
 use sqlx::PgPool;
 use tokio::time::sleep;
@@ -87,7 +88,7 @@ async fn owner_assigns_teacher_who_sees_but_cannot_edit(db: PgPool) {
     let (mut owner, _) = methodist(&state, "m@example.com").await;
     let course_id = course(&mut owner).await;
     let test_id = test_in(&mut owner, &course_id).await;
-    let (mut teacher, _) = testing::register(&state, "t@example.com").await;
+    let (mut teacher, _) = testing::register_verified(&state, "t@example.com").await;
     let assign = json!({ "email": "t@example.com" });
     assert_eq!(
         owner.post(&format!("/api/courses/{course_id}/teachers"), assign).await.0,
@@ -341,4 +342,48 @@ async fn first_answer_waits_for_edit_in_progress(db: PgPool) {
             .await
             .unwrap();
     assert_eq!((title.as_str(), locked), ("Правка до ответа", true), "правка, затем блокировка");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn unverified_email_cannot_be_made_teacher(db: PgPool) {
+    let state = testing::state(db);
+    let (mut owner, _) = methodist(&state, "m@example.com").await;
+    let course_id = course(&mut owner).await;
+    // Кто-то зарегистрировался на адрес коллеги, не владея ящиком.
+    let (_, squatter_id) = testing::register(&state, "colleague@example.com").await;
+    let teachers = format!("/api/courses/{course_id}/teachers");
+    let assign = json!({ "email": "colleague@example.com" });
+    let (status, error) = owner.post(&teachers, assign.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "не назначен: {error}");
+    assert_eq!(error["message"], "Пользователь ещё не подтвердил email", "понятная причина");
+    let (_, list) = owner.get(&teachers).await;
+    assert_eq!(list.as_array().map(Vec::len), Some(0), "преподавателей нет");
+    testing::verify_email(&state, squatter_id).await;
+    assert_eq!(
+        owner.post(&teachers, assign).await.0,
+        StatusCode::NO_CONTENT,
+        "после подтверждения"
+    );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn image_keeps_private_cache_while_api_is_not_stored(db: PgPool) {
+    let state = testing::state(db);
+    let (mut owner, _) = methodist(&state, "m@example.com").await;
+    let png = {
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(3, 2))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    };
+    let (_, uploaded) = owner.multipart("/api/attachments", ("file", "sign.png"), png).await;
+    let url = uploaded["url"].as_str().unwrap().to_owned();
+    let cache = |response: &Response| {
+        response.headers()[header::CACHE_CONTROL].to_str().unwrap().to_owned()
+    };
+    let image = owner.raw(Method::GET, &url).await;
+    assert_eq!(cache(&image), "private, max-age=3600", "картинку можно кешировать приватно");
+    let courses = owner.raw(Method::GET, "/api/courses").await;
+    assert_eq!(cache(&courses), "no-store", "данные API не кешируются");
 }

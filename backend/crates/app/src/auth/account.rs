@@ -117,15 +117,25 @@ pub(crate) fn normalize_email(raw: &str) -> Result<String, AppError> {
     }
 }
 
-/// Проверяет отображаемое имя: 1–200 символов после обрезки.
+/// Проверяет отображаемое имя: 1–200 символов после обрезки, без управляющих символов
+/// и переводов строк, без `://` и `www.`. Имя попадает в письмо на любой указанный адрес,
+/// поэтому в нём не должно быть ни ссылки, ни подложного текста с новой строки (фишинг).
 pub(crate) fn normalize_name(raw: &str) -> Result<String, AppError> {
     let name = raw.trim();
     let length = name.chars().count();
-    if (1..=200).contains(&length) {
-        Ok(name.to_owned())
-    } else {
-        Err(AppError::BadRequest("Имя должно быть от 1 до 200 символов".to_owned()))
+    if !(1..=200).contains(&length) {
+        return Err(AppError::BadRequest("Имя должно быть от 1 до 200 символов".to_owned()));
     }
+    if name.chars().any(char::is_control) {
+        return Err(AppError::BadRequest(
+            "Имя не должно содержать переводов строк и служебных символов".to_owned(),
+        ));
+    }
+    let lower = name.to_lowercase();
+    if lower.contains("://") || lower.contains("www.") {
+        return Err(AppError::BadRequest("Имя не должно содержать ссылок".to_owned()));
+    }
+    Ok(name.to_owned())
 }
 
 /// Занят ли email (дешёвая проверка до дорогого хеширования; гонку ловит UNIQUE).

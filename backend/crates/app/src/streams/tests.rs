@@ -199,7 +199,7 @@ fn token_of(invite: &Json) -> String {
 async fn course_teacher_assigns_stream_and_students_see_tests(db: PgPool) {
     let state = testing::state(db);
     let mut room = Classroom::new(&state, 1, json!({})).await;
-    let (mut teacher, _) = testing::register(&state, "teacher@example.com").await;
+    let (mut teacher, _) = testing::register_verified(&state, "teacher@example.com").await;
     let teachers = format!("/api/courses/{}/teachers", room.course_id);
     let _assigned = room.methodist.post(&teachers, json!({ "email": "teacher@example.com" })).await;
     let stream_id = testing::id_of(teacher.post("/api/streams", json!({ "name": "ИВТ-22" })).await);
@@ -276,4 +276,112 @@ async fn removed_student_is_marked_in_results_table(db: PgPool) {
     let (_, table) = room.methodist.get(&results).await;
     assert_eq!(table["rows"].as_array().map(Vec::len), Some(1), "попытка осталась: {table}");
     assert_eq!(table["rows"][0]["removed"], true, "с пометкой «исключён»");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn own_course_does_not_let_methodist_capture_foreign_stream(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let (mut intruder, intruder_id) = testing::register(&state, "intruder@example.com").await;
+    testing::grant(&state, intruder_id, "methodist").await;
+    let own = testing::id_of(intruder.post("/api/courses", json!({ "title": "Свой" })).await);
+    let assign = format!("/api/streams/{}/courses", room.stream_id);
+    let (status, _) = intruder.post(&assign, json!({ "course_id": own })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "чужой поток на свой курс не назначить");
+    let stream = format!("/api/streams/{}", room.stream_id);
+    assert_eq!(intruder.get(&stream).await.0, StatusCode::FORBIDDEN, "менеджером не стал");
+    let (_, detail) = room.methodist.get(&stream).await;
+    assert_eq!(
+        detail["courses"].as_array().map(Vec::len),
+        Some(1),
+        "курсов у потока не прибавилось"
+    );
+    let (mut teacher, _) = testing::register_verified(&state, "teacher@example.com").await;
+    let teachers = format!("/api/courses/{own}/teachers");
+    let _assigned = intruder.post(&teachers, json!({ "email": "teacher@example.com" })).await;
+    let (hidden, _) = teacher.post(&assign, json!({ "course_id": own })).await;
+    assert_eq!(hidden, StatusCode::NOT_FOUND, "преподавателю своего курса чужой поток не виден");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn removed_student_cannot_rejoin_by_link(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let member = format!("/api/streams/{}/members/{}", room.stream_id, room.student_id);
+    assert_eq!(room.methodist.delete(&member).await.0, StatusCode::NO_CONTENT, "исключён");
+    let join = format!("/api/invites/{}/join", room.invite_token);
+    let (status, error) = room.student.post(&join, json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "ссылка не возвращает: {error}");
+    assert_eq!(
+        error["message"], "Вы исключены из этого потока, обратитесь к преподавателю",
+        "понятная причина"
+    );
+    let (_, dashboard) = room.student.get("/api/dashboard").await;
+    assert_eq!(dashboard["available"].as_array().map(Vec::len), Some(0), "тестов по-прежнему нет");
+    let (_, stream) = room.methodist.get(&format!("/api/streams/{}", room.stream_id)).await;
+    assert!(!stream["members"][0]["removed_at"].is_null(), "всё ещё исключён: {stream}");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn removed_student_cannot_continue_started_attempt(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let attempt = room.start().await;
+    let member = format!("/api/streams/{}/members/{}", room.stream_id, room.student_id);
+    assert_eq!(room.methodist.delete(&member).await.0, StatusCode::NO_CONTENT, "исключён");
+    let (path, body) = testing::answer_body(&attempt, 0, 0, 1);
+    assert_eq!(
+        room.student.put(&path, body).await.0,
+        StatusCode::NOT_FOUND,
+        "ответ не сохраняется"
+    );
+    let id = attempt["id"].as_str().unwrap();
+    let submit = format!("/api/attempts/{id}/submit");
+    assert_eq!(
+        room.student.post(&submit, json!({})).await.0,
+        StatusCode::NOT_FOUND,
+        "сдать нельзя"
+    );
+    let (answers, submitted): (i64, bool) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM answers WHERE attempt_id = $1::uuid),
+                (SELECT submitted_at IS NOT NULL FROM attempts WHERE id = $1::uuid)",
+    )
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!((answers, submitted), (0, false), "попытка не изменилась");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn manager_restores_removed_student_and_stranger_cannot(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let member = format!("/api/streams/{}/members/{}", room.stream_id, room.student_id);
+    assert_eq!(room.methodist.delete(&member).await.0, StatusCode::NO_CONTENT, "исключён");
+    let restore = format!("{member}/restore");
+    let (mut stranger, _id) = testing::register(&state, "stranger@example.com").await;
+    assert_eq!(
+        stranger.post(&restore, json!({})).await.0,
+        StatusCode::NOT_FOUND,
+        "посторонний не возвращает"
+    );
+    assert_eq!(
+        room.methodist.post(&restore, json!({})).await.0,
+        StatusCode::NO_CONTENT,
+        "возвращён"
+    );
+    assert_eq!(
+        room.methodist.post(&restore, json!({})).await.0,
+        StatusCode::NOT_FOUND,
+        "уже не исключён"
+    );
+    let (_, dashboard) = room.student.get("/api/dashboard").await;
+    assert_eq!(dashboard["available"].as_array().map(Vec::len), Some(1), "тесты снова видны");
+    let audited: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'stream.restore_member'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(audited, 1, "возврат в аудите");
 }

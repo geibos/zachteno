@@ -39,10 +39,7 @@ pub(crate) const PASSWORD: &str = "корова летит на север 7";
 fn config() -> Config {
     Config {
         http: http_config(),
-        database: DatabaseConfig {
-            app: Secret::new(String::new()),
-            migrations: Secret::new(String::new()),
-        },
+        database: DatabaseConfig { app: Secret::new(String::new()), migrations: None },
         secrets: Secrets {
             peppers: Secret::new(BTreeMap::from([(1, vec![7; 32])])),
             signal_key: Secret::new(vec![9; 32]),
@@ -116,6 +113,7 @@ fn state_with(db: PgPool, config: Config) -> AppState {
         http_client: reqwest::Client::new(),
         blobs: Arc::new(InMemory::new()),
         uploads: Arc::new(Limiter::new(Duration::from_millis(1), 10_000)),
+        signals: Arc::new(Limiter::new(Duration::from_millis(1), 10_000)),
         asn: Arc::new(AsnTable::default()),
         image_permits: Arc::new(Semaphore::new(2)),
     }
@@ -353,6 +351,22 @@ pub(crate) async fn register(state: &AppState, email: &str) -> (Client, Uuid) {
     assert_eq!(status, StatusCode::CREATED, "регистрация {email}: {body}");
     let user_id = body["id"].as_str().and_then(|id| id.parse().ok()).unwrap();
     (client, user_id)
+}
+
+/// Регистрирует пользователя с уже подтверждённым email.
+pub(crate) async fn register_verified(state: &AppState, email: &str) -> (Client, Uuid) {
+    let (client, user_id) = register(state, email).await;
+    verify_email(state, user_id).await;
+    (client, user_id)
+}
+
+/// Отмечает email пользователя подтверждённым напрямую в базе.
+pub(crate) async fn verify_email(state: &AppState, user_id: Uuid) {
+    let _verified = sqlx::query("UPDATE users SET email_verified_at = now() WHERE id = $1")
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
 }
 
 /// Выдаёт глобальную роль напрямую в базе.

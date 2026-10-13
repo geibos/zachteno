@@ -26,6 +26,9 @@ md.use(katexPlugin, {
 	// \href, \url, \htmlClass и т.п. — выключены: только математика.
 	trust: false,
 	strict: 'ignore',
+	// Без потолков `\rule{1e9em}{1e9em}` или макросная бомба вешают вкладку студента.
+	maxSize: 50,
+	maxExpand: 100,
 	output: 'htmlAndMathml'
 });
 

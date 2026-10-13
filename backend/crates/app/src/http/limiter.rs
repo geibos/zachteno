@@ -39,6 +39,15 @@ impl<Key: Hash + Eq + Clone> Limiter<Key> {
         drop(arrivals);
         Ok(())
     }
+
+    /// Забывает ключи, чьё теоретическое время уже наступило: для `check` такая запись
+    /// неотличима от отсутствующей, а без чистки карта растёт с каждым новым IP.
+    pub(crate) fn prune(&self, now: Instant) {
+        self.arrivals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, theoretical| *theoretical > now);
+    }
 }
 
 /// Счётчик неудачных входов по email — одинаково для существующих и несуществующих адресов,
@@ -57,6 +66,8 @@ pub(crate) const FREE_FAILURES: u32 = 5;
 const BASE_BACKOFF: Duration = Duration::from_secs(30);
 /// Верхняя граница паузы.
 const MAX_BACKOFF: Duration = Duration::from_mins(15);
+/// Сколько помнить серию неудач после последней из них (заведомо дольше самой длинной паузы).
+pub(crate) const FORGET_AFTER: Duration = Duration::from_hours(1);
 
 impl LoginFailures {
     /// Атомарно резервирует попытку входа: при действующей паузе — `Err(wait)`,
@@ -90,5 +101,14 @@ impl LoginFailures {
     /// Сбрасывает счётчик после успешного входа.
     pub(crate) fn reset(&self, email: &str) {
         let _removed = self.failures.lock().unwrap_or_else(PoisonError::into_inner).remove(email);
+    }
+
+    /// Забывает серии, где последняя неудача старше [`FORGET_AFTER`]: без этого карта росла бы
+    /// с каждым новым адресом, включая несуществующие.
+    pub(crate) fn prune(&self, now: Instant) {
+        self.failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, slot| now.saturating_duration_since(slot.1) < FORGET_AFTER);
     }
 }

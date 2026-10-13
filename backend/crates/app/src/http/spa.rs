@@ -50,13 +50,14 @@ fn inline_scripts(page: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-/// Отдаёт файл сборки или `index.html` для клиентских маршрутов.
+/// Отдаёт файл сборки или `index.html` для клиентских маршрутов. Прямой `/index.html`
+/// тоже идёт через [`index_response`], чтобы страница не осталась без CSP.
 pub(crate) async fn serve(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     if path.starts_with("api/") {
         return AppError::NotFound.into_response();
     }
-    match Assets::get(path).filter(|_| !path.is_empty()) {
+    match Assets::get(path).filter(|_| !path.is_empty() && path != "index.html") {
         Some(file) => asset_response(path, file.data.into_owned()),
         None => index_response(),
     }

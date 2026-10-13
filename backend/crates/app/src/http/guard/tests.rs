@@ -56,3 +56,27 @@ async fn plain_http_stand_has_no_hsts(db: PgPool) {
         "HSTS только для HTTPS"
     );
 }
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn api_responses_are_not_stored(db: PgPool) {
+    let state = testing::state(db);
+    let mut client = Client::new(&state);
+    for path in ["/api/auth/me", "/api/courses", "/api/no-such-route"] {
+        let response = client.raw(Method::GET, path).await;
+        let cache =
+            response.headers().get(header::CACHE_CONTROL).and_then(|found| found.to_str().ok());
+        assert_eq!(cache, Some("no-store"), "no-store на {path}");
+    }
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn direct_index_html_has_csp(db: PgPool) {
+    let state = testing::state(db);
+    let response = Client::new(&state).raw(Method::GET, "/index.html").await;
+    let csp = response
+        .headers()
+        .get(header::CONTENT_SECURITY_POLICY)
+        .and_then(|found| found.to_str().ok())
+        .unwrap_or_default();
+    assert!(csp.contains("frame-ancestors 'none'"), "прямой /index.html с CSP: {csp:?}");
+}

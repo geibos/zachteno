@@ -36,6 +36,23 @@ describe('renderMarkdown', () => {
 		expect(html).not.toMatch(/href="javascript:/i);
 	});
 
+	it('огромные размеры KaTeX урезаются до maxSize', () => {
+		const html = renderMarkdown('$\\rule{100000em}{100000em}$');
+		// В аннотации MathML остаётся исходный TeX — смотрим только отрисовку.
+		const drawn = html.slice(html.indexOf('katex-html'));
+		expect(drawn).toContain('border-top-width:50em');
+		expect(drawn).not.toContain('100000em');
+	});
+
+	it('макросная бомба упирается в maxExpand и не рендерится', () => {
+		const x = '\\def\\x{aa}';
+		const y = '\\def\\y{' + '\\x'.repeat(10) + '}';
+		const z = '\\def\\z{' + '\\y'.repeat(10) + '}';
+		const html = renderMarkdown(`$${x}${y}${z}\\z$`);
+		expect(html).toContain('katex-error');
+		expect(html).not.toContain('aaaa');
+	});
+
 	it('ошибочная формула не роняет рендер', () => {
 		expect(() => renderMarkdown('$\\frac{1}{$')).not.toThrow();
 	});

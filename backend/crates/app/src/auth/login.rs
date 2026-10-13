@@ -56,8 +56,9 @@ pub(crate) async fn login(
     open_session(&state, &row, &ClientMeta::new(&state, ip, &headers)).await
 }
 
-/// Отказ с паузой, если по этому email подряд слишком много неудачных входов.
-fn begin_attempt(state: &AppState, key: &str) -> ApiResult<()> {
+/// Отказ с паузой, если по этому email подряд слишком много неудачных проверок пароля
+/// (вход или смена пароля — счётчик общий).
+pub(crate) fn begin_attempt(state: &AppState, key: &str) -> ApiResult<()> {
     state
         .login_failures
         .try_begin(key, Instant::now())

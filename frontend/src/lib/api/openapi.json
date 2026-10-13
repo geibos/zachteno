@@ -702,15 +702,6 @@
             }
           },
           {
-            "name": "invite",
-            "in": "query",
-            "description": "Токен приглашения в поток.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
             "name": "intent",
             "in": "query",
             "description": "`link` — привязать Яндекс ID к текущей учётке.",
@@ -1197,6 +1188,7 @@
           "courses"
         ],
         "summary": "Назначает преподавателя на свой курс по email зарегистрированного пользователя.",
+        "description": "Email должен быть подтверждён: иначе можно было бы зарегистрироваться на чужой адрес\nи получить доступ к результатам курса, когда методист назначит «коллегу».",
         "operationId": "assign_teacher",
         "parameters": [
           {
@@ -1221,8 +1213,8 @@
         },
         "responses": {
           "204": {},
-          "404": {
-            "description": "пользователь не найден"
+          "400": {
+            "description": "пользователь не найден или не подтвердил email"
           }
         }
       }
@@ -1462,6 +1454,7 @@
           "profile"
         ],
         "summary": "Меняет пароль и завершает остальные сессии.",
+        "description": "Лимит по IP — как у входа, а неудачные проверки текущего пароля идут в общий со входом\nсчётчик по email: украденная сессия не даёт подбирать пароль и нагружать Argon2.",
         "operationId": "change_password",
         "requestBody": {
           "content": {
@@ -1476,7 +1469,8 @@
         "responses": {
           "204": {},
           "400": {},
-          "401": {}
+          "401": {},
+          "429": {}
         }
       }
     },
@@ -1691,7 +1685,7 @@
         "tags": [
           "streams"
         ],
-        "summary": "Назначает поток на курс (методист-владелец или преподаватель курса).",
+        "summary": "Назначает поток на курс: нужны права на курс (методист-владелец или преподаватель)\nи на сам поток — иначе свой курс позволял бы подключить чужой поток и стать его менеджером.",
         "operationId": "assign_course",
         "parameters": [
           {
@@ -1905,6 +1899,39 @@
         ],
         "responses": {
           "204": {}
+        }
+      }
+    },
+    "/api/streams/{stream_id}/members/{user_id}/restore": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Возвращает исключённого студента: по ссылке-приглашению он вернуться не может.",
+        "operationId": "restore_member",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {}
         }
       }
     },
@@ -3298,6 +3325,7 @@
           "shared_rare_device",
           "shared_common_device",
           "transitive_device",
+          "same_hardware",
           "home_network",
           "session_handoff",
           "identical_free_text",

@@ -31,7 +31,7 @@
 	const returnPath = $derived(`/invite/${encodeURIComponent(token)}`);
 	const loginHref = $derived(`/login?next=${encodeURIComponent(returnPath)}`);
 	const yandexHref = $derived(
-		`/api/auth/oauth/yandex/start?${new URLSearchParams({ next: returnPath, invite: token }).toString()}`
+		`/api/auth/oauth/yandex/start?${new URLSearchParams({ next: returnPath }).toString()}`
 	);
 
 	let joining = $state(false);

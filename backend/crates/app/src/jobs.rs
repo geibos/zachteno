@@ -110,18 +110,23 @@ pub(crate) async fn complete(state: &AppState, job_id: i64) -> Result<(), sqlx::
     Ok(())
 }
 
-/// Отмечает неудачу: повтор с экспоненциальной паузой.
+/// Отмечает неудачу: повтор с экспоненциальной паузой. У письма, исчерпавшего попытки,
+/// полезная нагрузка стирается — повторов не будет, а в ней сырые токены ссылок.
 ///
 /// cancel-safe: yes — один UPDATE.
 pub(crate) async fn fail(state: &AppState, job: &Claimed, error: &str) -> Result<(), sqlx::Error> {
     let exponent = u32::try_from(job.attempts.clamp(0, 12)).unwrap_or(12);
     let pause = Duration::seconds(i64::from(2_u32.saturating_pow(exponent)).min(3600));
     let _failed = sqlx::query(
-        "UPDATE jobs SET last_error = $2, run_at = $3, locked_until = NULL WHERE id = $1",
+        "UPDATE jobs SET last_error = $2, run_at = $3, locked_until = NULL,
+                payload = CASE WHEN kind = $5 AND attempts >= $4 THEN '{}'::jsonb ELSE payload END
+         WHERE id = $1",
     )
     .bind(job.id)
     .bind(error)
     .bind(state.clock.now().saturating_add(pause))
+    .bind(MAX_ATTEMPTS)
+    .bind(JobKind::Email.name())
     .execute(&state.db)
     .await?;
     Ok(())

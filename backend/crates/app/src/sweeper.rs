@@ -1,6 +1,6 @@
 //! Периодические задачи: автосдача по сроку, расписание окон, очистка (design D7).
 
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 
 use sqlx::PgConnection;
 use time::{Duration, OffsetDateTime};
@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use crate::attempts::lifecycle::{self, SubmitReason};
 use crate::audit::AuditEntry;
+use crate::auth::onetime::LONGEST_LIFETIME;
 use crate::error::ApiResult;
+use crate::jobs::JobKind;
 use crate::state::AppState;
 
 #[cfg(test)]
@@ -25,11 +27,23 @@ const LOCK_KEY: i64 = 7_420_011;
 /// cancel-safe: yes — каждый проход в своих транзакциях; отмена между ними безопасна.
 pub(crate) async fn run(state: AppState) -> ! {
     loop {
+        forget_stale_limits(&state);
         if let Err(error) = run_once(&state).await {
             tracing::error!(%error, "проход свипера не удался");
         }
         sleep(INTERVAL).await;
     }
+}
+
+/// Чистит лимиты в памяти процесса. Они у каждого экземпляра свои, поэтому — вне advisory lock.
+fn forget_stale_limits(state: &AppState) {
+    let now = Instant::now();
+    state.login_failures.prune(now);
+    for limiter in [&state.limits.login, &state.limits.register, &state.limits.mail] {
+        limiter.prune(now);
+    }
+    state.uploads.prune(now);
+    state.signals.prune(now);
 }
 
 /// Один проход; `false`, если блокировку держит другой экземпляр.
@@ -165,5 +179,14 @@ async fn cleanup(connection: &mut PgConnection, now: OffsetDateTime) -> ApiResul
     for (statement, cutoff) in statements {
         let _removed = sqlx::query(statement).bind(cutoff).execute(&mut *connection).await?;
     }
+    // Неотправленные письма старше срока жизни токенов: ссылки в них уже не работают,
+    // а сырые токены в базе держать незачем (повторы писем укладываются в минуты).
+    let _scrubbed = sqlx::query(
+        "UPDATE jobs SET payload = '{}' WHERE kind = $1 AND done_at IS NULL AND payload <> '{}' AND created_at < $2",
+    )
+    .bind(JobKind::Email.name())
+    .bind(now.saturating_sub(LONGEST_LIFETIME))
+    .execute(&mut *connection)
+    .await?;
     Ok(())
 }

@@ -1,14 +1,21 @@
 import { test, expect } from './support/fixtures';
 import { HAS_ADMIN, NO_ADMIN_REASON, addStream, registerUser, seedCourseTest, tokenFromUrl } from './support/api';
 import { signIn } from './support/browser';
+import { MAIL_DIR, NO_MAIL_REASON, waitForLink } from './support/mail';
 
 test.skip(!HAS_ADMIN, NO_ADMIN_REASON);
+// Преподавателем назначают только пользователя с подтверждённым email — подтверждаем по письму.
+test.skip(!MAIL_DIR, NO_MAIL_REASON);
 
 test('15. преподаватель создаёт ссылку, открывает окно и видит журнал переходов', async ({ page, context, admin }) => {
 	const course = await seedCourseTest(admin.api);
 	const teacher = await registerUser('teacher', 'Преподаватель Курса');
 	expect(teacher.user.roles.superuser).toBe(false);
 	expect(teacher.user.roles.methodist).toBe(false);
+	const verifyLink = await waitForLink(teacher.email, '/verify-email');
+	await teacher.api.call('POST', '/api/auth/verify-email', {
+		token: new URL(verifyLink, 'http://localhost').searchParams.get('token')
+	});
 	await admin.api.call('POST', `/api/courses/${course.courseId}/teachers`, { email: teacher.email });
 	// Поток с курсом готовит методист; ссылкой и окном управляет преподаватель.
 	const { streamId, streamName } = await addStream(admin.api, course.courseId, course.testId, { inviteAndOpen: false });

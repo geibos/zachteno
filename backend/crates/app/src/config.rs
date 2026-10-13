@@ -50,7 +50,9 @@ pub(crate) struct HttpConfig {
 #[derive(Debug, Clone)]
 pub(crate) struct DatabaseConfig {
     pub app: Secret<String>,
-    pub migrations: Secret<String>,
+    /// Роль-владелец (`MIGRATION_DATABASE_URL`). В production у сервера её нет: миграции
+    /// применяет разовый `migrate`, а `serve` только проверяет, что они применены.
+    pub migrations: Option<Secret<String>>,
 }
 
 /// Серверные секреты, которых нет в базе.
@@ -104,7 +106,7 @@ impl Config {
             http: http_from_env(source)?,
             database: DatabaseConfig {
                 app: Secret::new(required(source, "DATABASE_URL")?),
-                migrations: Secret::new(required(source, "MIGRATION_DATABASE_URL")?),
+                migrations: migration_url(source),
             },
             secrets: secrets_from_env(source)?,
             storage: storage_from_env(source)?,
@@ -114,6 +116,18 @@ impl Config {
             asn_db_path: source("ASN_DB_PATH").filter(|path| !path.is_empty()),
         })
     }
+}
+
+/// Строка подключения роли-владельца для команды `migrate`: остальная конфигурация ей не нужна,
+/// поэтому разовому сервису миграций не передаются ни перцы, ни ключи хранилища.
+pub(crate) fn migration_url_from_env() -> anyhow::Result<Secret<String>> {
+    migration_url(&|name| env::var(name).ok())
+        .context("переменная окружения MIGRATION_DATABASE_URL не задана")
+}
+
+/// `MIGRATION_DATABASE_URL`, если задана и не пуста.
+fn migration_url(source: EnvSource<'_>) -> Option<Secret<String>> {
+    source("MIGRATION_DATABASE_URL").filter(|url| !url.is_empty()).map(Secret::new)
 }
 
 fn required(source: EnvSource<'_>, name: &str) -> anyhow::Result<String> {

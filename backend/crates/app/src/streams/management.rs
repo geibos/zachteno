@@ -150,7 +150,8 @@ pub(crate) struct CourseRef {
     pub course_id: Uuid,
 }
 
-/// Назначает поток на курс (методист-владелец или преподаватель курса).
+/// Назначает поток на курс: нужны права на курс (методист-владелец или преподаватель)
+/// и на сам поток — иначе свой курс позволял бы подключить чужой поток и стать его менеджером.
 #[utoipa::path(post, path = "/api/streams/{stream_id}/courses", tag = "streams", params(("stream_id" = Uuid, Path)),
     request_body = CourseRef, responses((status = 204)))]
 pub(crate) async fn assign_course(
@@ -161,7 +162,7 @@ pub(crate) async fn assign_course(
 ) -> ApiResult<StatusCode> {
     let _role =
         access::require_on(&state.db, &user, request.course_id, CourseRole::can_manage).await?;
-    ensure_stream(&state, stream_id).await?;
+    require_manager(&state.db, &user, stream_id).await?;
     let mut tx = state.db.begin().await?;
     let _inserted = sqlx::query("INSERT INTO stream_courses (stream_id, course_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
         .bind(stream_id)
@@ -177,17 +178,6 @@ pub(crate) async fn assign_course(
         .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// «Не найдено», если потока нет.
-///
-/// cancel-safe: yes — только чтение.
-async fn ensure_stream(state: &AppState, stream_id: Uuid) -> ApiResult<()> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM streams WHERE id = $1)")
-        .bind(stream_id)
-        .fetch_one(&state.db)
-        .await?;
-    if exists { Ok(()) } else { Err(AppError::NotFound) }
 }
 
 /// Снимает поток с курса.
@@ -236,6 +226,33 @@ pub(crate) async fn remove_member(
         .execute(&mut *tx)
         .await?;
     AuditEntry::new("stream.remove_member", "user")
+        .by(Some(user.id), Some(ip))
+        .on(member_id)
+        .with(serde_json::json!({ "stream_id": stream_id }))
+        .record(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+const RESTORE_MEMBER: &str = "UPDATE stream_members SET removed_at = NULL, removed_by = NULL WHERE stream_id = $1 AND user_id = $2 AND removed_at IS NOT NULL";
+
+/// Возвращает исключённого студента: по ссылке-приглашению он вернуться не может.
+#[utoipa::path(post, path = "/api/streams/{stream_id}/members/{user_id}/restore", tag = "streams",
+    params(("stream_id" = Uuid, Path), ("user_id" = Uuid, Path)), responses((status = 204), (status = 404)))]
+pub(crate) async fn restore_member(
+    State(state): State<AppState>,
+    (user, ClientIp(ip)): (CurrentUser, ClientIp),
+    Path((stream_id, member_id)): PathPair,
+) -> ApiResult<StatusCode> {
+    require_manager(&state.db, &user, stream_id).await?;
+    let mut tx = state.db.begin().await?;
+    let restored =
+        sqlx::query(RESTORE_MEMBER).bind(stream_id).bind(member_id).execute(&mut *tx).await?;
+    if restored.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    AuditEntry::new("stream.restore_member", "user")
         .by(Some(user.id), Some(ip))
         .on(member_id)
         .with(serde_json::json!({ "stream_id": stream_id }))

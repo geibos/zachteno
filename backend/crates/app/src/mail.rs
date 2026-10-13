@@ -17,6 +17,9 @@ use crate::config::MailConfig;
 use crate::jobs::{self, JobKind};
 use crate::state::AppState;
 
+#[cfg(test)]
+mod tests;
+
 /// Не чаще одного письма в секунду (квота Postbox по умолчанию).
 const SEND_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -44,18 +47,34 @@ impl Email {
             Self::VerifyAddress { name, token, .. } => (
                 "Подтвердите адрес почты — Зачтено".to_owned(),
                 format!(
-                    "Здравствуйте, {name}!\n\nПодтвердите адрес почты по ссылке:\n{public_url}/verify-email?token={token}\n\n\
-                     Ссылка действует 24 часа. Если вы не регистрировались в «Зачтено», просто проигнорируйте письмо.\n"
+                    "{}\n\nПодтвердите адрес почты по ссылке:\n{public_url}/verify-email?token={token}\n\n\
+                     Ссылка действует 24 часа. Если вы не регистрировались в «Зачтено», просто проигнорируйте письмо.\n",
+                    greeting(name)
                 ),
             ),
             Self::ResetPassword { name, token, .. } => (
                 "Восстановление пароля — Зачтено".to_owned(),
                 format!(
-                    "Здравствуйте, {name}!\n\nЗадать новый пароль можно по ссылке:\n{public_url}/reset-password?token={token}\n\n\
-                     Ссылка действует 1 час. Если вы не запрашивали восстановление, проигнорируйте письмо.\n"
+                    "{}\n\nЗадать новый пароль можно по ссылке:\n{public_url}/reset-password?token={token}\n\n\
+                     Ссылка действует 1 час. Если вы не запрашивали восстановление, проигнорируйте письмо.\n",
+                    greeting(name)
                 ),
             ),
         }
+    }
+}
+
+/// Приветствие с именем, только если имя нельзя принять за ссылку или адрес: почтовые
+/// клиенты подсвечивают `example.com` как ссылку, а имя задаёт тот, кто регистрируется
+/// (в том числе на чужой адрес). Иначе — безымянное «Здравствуйте!».
+fn greeting(name: &str) -> String {
+    let linkish = name.chars().any(|symbol| {
+        symbol.is_control() || matches!(symbol, '.' | '@' | '/' | ':' | '\\' | '<' | '>')
+    });
+    if linkish || name.trim().is_empty() {
+        "Здравствуйте!".to_owned()
+    } else {
+        format!("Здравствуйте, {name}!")
     }
 }
 

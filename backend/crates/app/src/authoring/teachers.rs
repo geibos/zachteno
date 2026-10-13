@@ -52,8 +52,11 @@ pub(crate) struct AssignTeacher {
 const ASSIGN_TEACHER: &str = "INSERT INTO course_teachers (course_id, user_id, assigned_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING";
 
 /// Назначает преподавателя на свой курс по email зарегистрированного пользователя.
+///
+/// Email должен быть подтверждён: иначе можно было бы зарегистрироваться на чужой адрес
+/// и получить доступ к результатам курса, когда методист назначит «коллегу».
 #[utoipa::path(post, path = "/api/courses/{course_id}/teachers", tag = "courses", params(("course_id" = Uuid, Path)),
-    request_body = AssignTeacher, responses((status = 204), (status = 404, description = "пользователь не найден")))]
+    request_body = AssignTeacher, responses((status = 204), (status = 400, description = "пользователь не найден или не подтвердил email")))]
 pub(crate) async fn assign_teacher(
     State(state): State<AppState>,
     (user, ClientIp(ip)): (CurrentUser, ClientIp),
@@ -61,23 +64,41 @@ pub(crate) async fn assign_teacher(
     Json(request): Json<AssignTeacher>,
 ) -> ApiResult<StatusCode> {
     let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_edit).await?;
-    let email = account::normalize_email(&request.email)?;
-    let teacher = account::find_for_login(&state.db, &email).await?.ok_or_else(not_registered)?;
+    let teacher_id = verified_user(&state, &request.email).await?;
     let mut tx = state.db.begin().await?;
     let _inserted = sqlx::query(ASSIGN_TEACHER)
         .bind(course_id)
-        .bind(teacher.id)
+        .bind(teacher_id)
         .bind(user.id)
         .execute(&mut *tx)
         .await?;
     AuditEntry::new("course.teacher_assign", "user")
         .by(Some(user.id), Some(ip))
-        .on(teacher.id)
+        .on(teacher_id)
         .in_course(course_id)
         .record(&mut *tx)
         .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Пользователь с этим email, если адрес подтверждён.
+///
+/// cancel-safe: yes — только чтение.
+async fn verified_user(state: &AppState, raw_email: &str) -> ApiResult<Uuid> {
+    let email = account::normalize_email(raw_email)?;
+    let (user_id, verified): (Uuid, bool) = sqlx::query_as(
+        "SELECT id, email_verified_at IS NOT NULL FROM users WHERE email_lower = lower($1)",
+    )
+    .bind(&email)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(not_registered)?;
+    if verified {
+        Ok(user_id)
+    } else {
+        Err(AppError::BadRequest("Пользователь ещё не подтвердил email".to_owned()))
+    }
 }
 
 fn not_registered() -> AppError {

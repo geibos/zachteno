@@ -174,7 +174,7 @@ async fn submitted_attempt(room: &mut Classroom) -> String {
 
 /// Преподаватель курса A.
 async fn course_teacher(state: &AppState, room: &mut Classroom) -> Client {
-    let (teacher, _) = testing::register(state, "teacher@example.com").await;
+    let (teacher, _) = testing::register_verified(state, "teacher@example.com").await;
     let teachers = format!("/api/courses/{}/teachers", room.course_id);
     let _assigned = room.methodist.post(&teachers, json!({ "email": "teacher@example.com" })).await;
     teacher

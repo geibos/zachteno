@@ -224,13 +224,16 @@ const RECORD_USE: &str =
 
 /// Делает пользователя студентом потока и пишет переход в журнал. Возвращает, стал ли он участником сейчас.
 ///
+/// Исключённого ссылка не возвращает: иначе исключение отменялось бы одним переходом.
+///
 /// cancel-safe: yes — в транзакции вызывающего.
-pub(crate) async fn join_by_link(
+async fn join_by_link(
     tx: &mut PgConnection,
     (link_id, stream_id): LinkAndStream,
     user_id: Uuid,
     (ip, now): (IpAddr, OffsetDateTime),
 ) -> ApiResult<bool> {
+    ensure_not_removed(tx, stream_id, user_id).await?;
     let _used = sqlx::query(RECORD_USE)
         .bind(link_id)
         .bind(user_id)
@@ -240,8 +243,7 @@ pub(crate) async fn join_by_link(
         .await?;
     let joined = sqlx::query(
         "INSERT INTO stream_members (stream_id, user_id, joined_at) VALUES ($1, $2, $3)
-         ON CONFLICT (stream_id, user_id) DO UPDATE SET removed_at = NULL, removed_by = NULL
-         WHERE stream_members.removed_at IS NOT NULL",
+         ON CONFLICT (stream_id, user_id) DO NOTHING",
     )
     .bind(stream_id)
     .bind(user_id)
@@ -254,22 +256,25 @@ pub(crate) async fn join_by_link(
 /// Ссылка и её поток.
 type LinkAndStream = (Uuid, Uuid);
 
-/// Вступление по хешу токена (после входа через внешний провайдер).
+/// Конфликт, если студента исключили из потока: вернуть его может только тот, кто управляет потоком.
 ///
-/// cancel-safe: yes — в транзакции вызывающего.
-pub(crate) async fn join_by_hash(
+/// cancel-safe: yes — только чтение в транзакции вызывающего.
+async fn ensure_not_removed(
     tx: &mut PgConnection,
-    hash: &[u8],
+    stream_id: Uuid,
     user_id: Uuid,
-    (ip, now): (IpAddr, OffsetDateTime),
 ) -> ApiResult<()> {
-    let found: Option<LinkAndStream> =
-        sqlx::query_as("SELECT id, stream_id FROM invite_links WHERE token_hash = $1")
-            .bind(hash)
-            .fetch_optional(&mut *tx)
-            .await?;
-    if let Some(link) = found {
-        let _joined = join_by_link(tx, link, user_id, (ip, now)).await?;
+    let removed: Option<bool> = sqlx::query_scalar(
+        "SELECT removed_at IS NOT NULL FROM stream_members WHERE stream_id = $1 AND user_id = $2",
+    )
+    .bind(stream_id)
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if removed == Some(true) {
+        return Err(AppError::Conflict(
+            "Вы исключены из этого потока, обратитесь к преподавателю".to_owned(),
+        ));
     }
     Ok(())
 }

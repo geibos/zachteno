@@ -8,7 +8,7 @@ use time::Duration;
 use tracing::Level;
 use tracing::subscriber::set_default;
 
-use crate::state::AppState;
+use crate::state::{AppState, Limits};
 use crate::testing::{self, Client, PASSWORD};
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -279,4 +279,114 @@ async fn logs_have_requests_but_no_passwords_tokens_or_cookies(db: PgPool) {
     for secret in &secrets {
         assert!(!logs.contains(secret.as_str()), "в логе нет секрета «{secret}»");
     }
+}
+
+/// Смена пароля с текущим паролем `current`.
+async fn change_password(client: &mut Client, current: &str) -> StatusCode {
+    let body =
+        json!({ "current_password": current, "new_password": "совсем новый секретный пароль 5" });
+    client.post("/api/profile/password", body).await.0
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn stolen_session_cannot_brute_force_current_password(db: PgPool) {
+    let state = testing::state(db);
+    let (mut thief, _) = testing::register(&state, "ivan@example.com").await;
+    for _ in 0..5 {
+        assert_eq!(
+            change_password(&mut thief, "не тот пароль 12").await,
+            StatusCode::UNAUTHORIZED,
+            "неверный текущий пароль"
+        );
+    }
+    assert_eq!(
+        change_password(&mut thief, PASSWORD).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "после серии неудач пауза — даже с верным паролем"
+    );
+    let login = json!({ "email": "ivan@example.com", "password": PASSWORD });
+    assert_eq!(
+        Client::new(&state).post("/api/auth/login", login).await.0,
+        StatusCode::TOO_MANY_REQUESTS,
+        "счётчик общий со входом"
+    );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn correct_current_password_resets_failures(db: PgPool) {
+    let state = testing::state(db);
+    let (mut client, _) = testing::register(&state, "ivan@example.com").await;
+    for _ in 0..4 {
+        let _failed = change_password(&mut client, "не тот пароль 12").await;
+    }
+    assert_eq!(change_password(&mut client, PASSWORD).await, StatusCode::NO_CONTENT, "смена");
+    assert_eq!(state.login_failures.count("ivan@example.com"), 0, "счётчик сброшен");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn password_change_is_throttled_by_ip(db: PgPool) {
+    let state = AppState { limits: Arc::new(Limits::production()), ..testing::state(db) };
+    let (mut client, _) = testing::register(&state, "ivan@example.com").await;
+    let weak = json!({ "current_password": PASSWORD, "new_password": "123" });
+    for _ in 0..10 {
+        let (status, _) = client.post("/api/profile/password", weak.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "в пределах лимита");
+    }
+    let (status, _) = client.post("/api/profile/password", weak).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "лимит по IP, как у входа");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn phishing_names_are_rejected_before_any_letter(db: PgPool) {
+    let state = testing::state(db);
+    for name in [
+        "Иван\nВаш аккаунт взломан, срочно перейдите",
+        "Иван\u{7}",
+        "Поддержка https://evil.example",
+        "Зайдите на WWW.evil.example",
+    ] {
+        let body =
+            json!({ "email": "victim@example.com", "display_name": name, "password": PASSWORD });
+        let (status, error) = Client::new(&state).post("/api/auth/register", body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "имя {name:?}: {error}");
+    }
+    let letters: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'email'")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(letters, 0, "письмо на чужой адрес не ушло");
+    let ordinary = json!({ "email": "ivan@example.com", "display_name": "Иван И. Петров", "password": PASSWORD });
+    assert_eq!(
+        Client::new(&state).post("/api/auth/register", ordinary).await.0,
+        StatusCode::CREATED,
+        "обычное имя с инициалом"
+    );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn csrf_rejection_logs_route_without_invite_token(db: PgPool) {
+    let state = testing::state(db);
+    let captured = Captured::default();
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_max_level(Level::TRACE)
+        .with_writer(move || writer.clone())
+        .finish();
+    let guard = set_default(subscriber);
+    let token = "tajnyj-token-priglasheniya-42";
+    let (status, _) = Client::new(&state)
+        .send_with_origin(
+            Method::POST,
+            &format!("/api/invites/{token}/join"),
+            "https://evil.example",
+        )
+        .await;
+    drop(guard);
+    assert_eq!(status, StatusCode::FORBIDDEN, "чужой Origin");
+    let logs = captured.text();
+    assert!(logs.contains("Origin отклонён"), "отказ в журнале: {logs}");
+    let route = ["/api/invites/", "{", "token", "}", "/join"].concat();
+    assert!(logs.contains(&route), "шаблон маршрута: {logs}");
+    assert!(!logs.contains(token), "токена в журнале нет: {logs}");
 }

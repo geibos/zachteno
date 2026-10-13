@@ -1,4 +1,5 @@
 <script lang="ts">
+	import UserCheckIcon from '@lucide/svelte/icons/user-check';
 	import UserXIcon from '@lucide/svelte/icons/user-x';
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import { toast } from 'svelte-sonner';
@@ -39,6 +40,17 @@
 		toast.success(`${member.display_name} исключён(а) из потока`);
 		onchange();
 	}
+
+	// По ссылке-приглашению исключённый вернуться не может — только так.
+	async function restore(member: Member): Promise<void> {
+		await unwrap(
+			api.POST('/api/streams/{stream_id}/members/{user_id}/restore', {
+				params: { path: { stream_id: streamId, user_id: member.user_id } }
+			})
+		);
+		toast.success(`${member.display_name} снова в потоке`);
+		onchange();
+	}
 </script>
 
 {#snippet memberRow(member: Member, isRemoved: boolean)}
@@ -58,6 +70,10 @@
 		{#if !isRemoved}
 			<Button size="sm" variant="outline" class="self-start sm:self-center" onclick={() => askRemove(member)}>
 				<UserXIcon />Исключить
+			</Button>
+		{:else}
+			<Button size="sm" variant="outline" class="self-start sm:self-center" onclick={() => restore(member)}>
+				<UserCheckIcon />Вернуть в поток
 			</Button>
 		{/if}
 	</li>

@@ -564,7 +564,11 @@ export interface paths {
         /** Преподаватели курса. */
         get: operations["list_teachers"];
         put?: never;
-        /** Назначает преподавателя на свой курс по email зарегистрированного пользователя. */
+        /**
+         * Назначает преподавателя на свой курс по email зарегистрированного пользователя.
+         * @description Email должен быть подтверждён: иначе можно было бы зарегистрироваться на чужой адрес
+         *     и получить доступ к результатам курса, когда методист назначит «коллегу».
+         */
         post: operations["assign_teacher"];
         delete?: never;
         options?: never;
@@ -717,7 +721,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Меняет пароль и завершает остальные сессии. */
+        /**
+         * Меняет пароль и завершает остальные сессии.
+         * @description Лимит по IP — как у входа, а неудачные проверки текущего пароля идут в общий со входом
+         *     счётчик по email: украденная сессия не даёт подбирать пароль и нагружать Argon2.
+         */
         post: operations["change_password"];
         delete?: never;
         options?: never;
@@ -838,7 +846,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Назначает поток на курс (методист-владелец или преподаватель курса). */
+        /**
+         * Назначает поток на курс: нужны права на курс (методист-владелец или преподаватель)
+         *     и на сам поток — иначе свой курс позволял бы подключить чужой поток и стать его менеджером.
+         */
         post: operations["assign_course"];
         delete?: never;
         options?: never;
@@ -910,6 +921,23 @@ export interface paths {
         post?: never;
         /** Исключает студента: доступ к тестам потока пропадает, попытки остаются. */
         delete: operations["remove_member"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streams/{stream_id}/members/{user_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Возвращает исключённого студента: по ссылке-приглашению он вернуться не может. */
+        post: operations["restore_member"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1407,7 +1435,7 @@ export interface components {
          * @description Вид совпадения, на котором основана связь.
          * @enum {string}
          */
-        EvidenceKind: "shared_marker" | "shared_rare_device" | "shared_common_device" | "transitive_device" | "home_network" | "session_handoff" | "identical_free_text" | "matching_mistakes" | "typing_similarity" | "registration_pattern" | "shared_public_network";
+        EvidenceKind: "shared_marker" | "shared_rare_device" | "shared_common_device" | "transitive_device" | "same_hardware" | "home_network" | "session_handoff" | "identical_free_text" | "matching_mistakes" | "typing_similarity" | "registration_pattern" | "shared_public_network";
         /**
          * @description Как выбирается итоговый балл из сданных попыток.
          * @enum {string}
@@ -2523,8 +2551,6 @@ export interface operations {
                 next?: string;
                 /** @description Токен ссылки доверенной регистрации. */
                 trusted?: string;
-                /** @description Токен приглашения в поток. */
-                invite?: string;
                 /** @description `link` — привязать Яндекс ID к текущей учётке. */
                 intent?: string;
             };
@@ -2930,8 +2956,8 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description пользователь не найден */
-            404: {
+            /** @description пользователь не найден или не подтвердил email */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3154,6 +3180,12 @@ export interface operations {
                 content?: never;
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3463,6 +3495,32 @@ export interface operations {
         requestBody?: never;
         responses: {
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    restore_member: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                stream_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

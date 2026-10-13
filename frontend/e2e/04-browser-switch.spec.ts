@@ -125,6 +125,6 @@ test('10. смена браузера: второй аккаунт из Firefox 
 			},
 			{ message: `основания связи Chromium ↔ Firefox должны включать общее устройство\n${report}`, timeout: 30_000 }
 		)
-		.toContainEqual(expect.stringMatching(/^shared_(rare|common)_device$/));
+		.toContainEqual(expect.stringMatching(/^(shared_(rare|common)_device|same_hardware)$/));
 	await first.api.dispose();
 });
