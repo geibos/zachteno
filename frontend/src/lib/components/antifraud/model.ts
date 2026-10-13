@@ -22,7 +22,8 @@ export const EVIDENCE_LABELS: Record<EvidenceKind, string> = {
 	matching_mistakes: 'совпадающие ошибки',
 	typing_similarity: 'похожий ритм набора',
 	registration_pattern: 'похожая регистрация',
-	shared_public_network: 'общая публичная сеть'
+	shared_public_network: 'общая публичная сеть',
+	transitive_device: 'связь через общее устройство с третьим аккаунтом'
 };
 
 export function evidenceLabel(kind: string): string {

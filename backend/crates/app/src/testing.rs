@@ -2,11 +2,14 @@
 
 use std::collections::BTreeMap;
 use std::env::temp_dir;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::request::Builder;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use axum::response::Response;
 use http_body_util::BodyExt as _;
@@ -93,6 +96,13 @@ pub(crate) fn state_with_yandex(db: PgPool, base_url: &str) -> AppState {
     state_with(db, custom)
 }
 
+/// Состояние с публичным адресом `public_url` (например, HTTPS — для HSTS).
+pub(crate) fn state_with_public_url(db: PgPool, public_url: &str) -> AppState {
+    let mut custom = config();
+    public_url.clone_into(&mut custom.http.public_url);
+    state_with(db, custom)
+}
+
 fn state_with(db: PgPool, config: Config) -> AppState {
     let hasher = Hasher::new(config.secrets.peppers.clone(), 4);
     AppState {
@@ -127,20 +137,46 @@ pub(crate) struct Client {
     cookie: Option<String>,
     /// Прочие cookie (например, состояние OAuth).
     extra: Vec<CookiePair>,
+    /// Адрес клиента для `ConnectInfo`; без него — `127.0.0.1`.
+    peer: Option<SocketAddr>,
 }
 
 impl Client {
     pub(crate) fn new(state: &AppState) -> Self {
-        Self { app: app(state.clone()), cookie: None, extra: Vec::new() }
+        Self { app: app(state.clone()), cookie: None, extra: Vec::new(), peer: None }
     }
 
     pub(crate) fn anonymous(&self) -> Self {
-        Self { app: self.app.clone(), cookie: None, extra: Vec::new() }
+        Self { app: self.app.clone(), cookie: None, extra: Vec::new(), peer: None }
     }
 
-    /// Копия клиента с той же cookie (как украденная сессия).
+    /// Копия клиента с той же cookie (как украденная сессия или второе устройство).
     pub(crate) fn anonymous_with_same_cookie(&self) -> Self {
-        Self { app: self.app.clone(), cookie: self.cookie.clone(), extra: self.extra.clone() }
+        Self {
+            app: self.app.clone(),
+            cookie: self.cookie.clone(),
+            extra: self.extra.clone(),
+            peer: None,
+        }
+    }
+
+    /// Cookie сессии `имя=значение`, если клиент вошёл.
+    pub(crate) fn session_cookie(&self) -> Option<&str> {
+        self.cookie.as_deref()
+    }
+
+    /// Дальше запросы идут с адреса `ip` (другая сеть, VPN).
+    pub(crate) fn set_ip(&mut self, ip: &str) {
+        self.peer = Some(SocketAddr::new(ip.parse::<IpAddr>().unwrap(), 40_000));
+    }
+
+    /// Начало запроса: метод, путь, свой `Origin` и адрес клиента.
+    fn request(&self, method: Method, path: &str) -> Builder {
+        let builder = Request::builder().method(method).uri(path).header(header::ORIGIN, ORIGIN);
+        match self.peer {
+            Some(peer) => builder.extension(ConnectInfo(peer)),
+            None => builder,
+        }
     }
 
     /// Запрос с произвольным `Origin`.
@@ -169,8 +205,7 @@ impl Client {
         path: &str,
         body: Option<Json>,
     ) -> (StatusCode, Json) {
-        let mut builder =
-            Request::builder().method(method).uri(path).header(header::ORIGIN, ORIGIN);
+        let mut builder = self.request(method, path);
         if let Some(cookie) = self.cookie_header() {
             builder = builder.header(header::COOKIE, cookie);
         }
@@ -221,8 +256,7 @@ impl Client {
 
     /// Выполняет запрос и возвращает сырой ответ (для редиректов).
     pub(crate) async fn raw(&mut self, method: Method, path: &str) -> Response {
-        let mut builder =
-            Request::builder().method(method).uri(path).header(header::ORIGIN, ORIGIN);
+        let mut builder = self.request(method, path);
         if let Some(cookie) = self.cookie_header() {
             builder = builder.header(header::COOKIE, cookie);
         }
@@ -394,18 +428,38 @@ impl Classroom {
 
     /// Меняет окно теста для потока.
     pub(crate) async fn window(&mut self, change: Json) {
-        let path = format!("/api/tests/{}/windows/{}", self.test_id, self.stream_id);
+        let test_id = self.test_id.clone();
+        self.window_of(&test_id, change).await;
+    }
+
+    /// Меняет окно другого теста курса для потока.
+    pub(crate) async fn window_of(&mut self, test_id: &str, change: Json) {
+        let path = format!("/api/tests/{test_id}/windows/{}", self.stream_id);
         let (status, body) = self.methodist.put(&path, change).await;
         assert_eq!(status, StatusCode::NO_CONTENT, "окно: {body}");
     }
 
-    /// Студент начинает попытку и получает её вид.
-    pub(crate) async fn start(&mut self) -> Json {
+    /// Ещё один опубликованный тест курса с открытым для потока окном.
+    pub(crate) async fn another_test(&mut self, questions: usize, overrides: Json) -> String {
+        let test_id =
+            published_test(&mut self.methodist, &self.course_id, questions, &overrides).await;
+        self.window_of(&test_id, json!({ "action": "open" })).await;
+        test_id
+    }
+
+    /// Студент начинает попытку по тесту `test_id` и получает её вид.
+    pub(crate) async fn start_of(&mut self, test_id: &str) -> Json {
         let (status, started) =
-            self.student.post(&format!("/api/tests/{}/attempts", self.test_id), json!({})).await;
+            self.student.post(&format!("/api/tests/{test_id}/attempts"), json!({})).await;
         assert!(status.is_success(), "старт: {started}");
         let attempt_id = started["attempt_id"].as_str().unwrap().to_owned();
         self.student.get(&format!("/api/attempts/{attempt_id}")).await.1
+    }
+
+    /// Студент начинает попытку и получает её вид.
+    pub(crate) async fn start(&mut self) -> Json {
+        let test_id = self.test_id.clone();
+        self.start_of(&test_id).await
     }
 }
 

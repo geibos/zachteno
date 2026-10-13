@@ -2,9 +2,10 @@ use axum::http::StatusCode;
 use serde_json::json;
 use sqlx::PgPool;
 use time::Duration;
+use time::format_description::well_known::Rfc3339;
 
 use crate::sweeper;
-use crate::testing::{self, Classroom};
+use crate::testing::{self, Classroom, Client};
 
 /// Причина сдачи и балл попытки.
 type Outcome = (Option<String>, Option<rust_decimal::Decimal>);
@@ -238,4 +239,108 @@ async fn dashboard_reports_results_later(db: PgPool) {
     let completed = &dashboard["completed"][0];
     assert_eq!(completed["review"]["available"], false, "результаты позже: {dashboard}");
     assert!(completed["final_score"].is_null(), "балл скрыт до показа");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn second_active_attempt_violates_unique_index(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({ "attempts_limit": 3 })).await;
+    let _first = room.start().await;
+    let second =
+        sqlx::query("INSERT INTO attempts (test_id, user_id, layout) VALUES ($1::uuid, $2, '[]')")
+            .bind(&room.test_id)
+            .bind(room.student_id)
+            .execute(&state.db)
+            .await;
+    let violated = second.as_ref().err().and_then(|error| error.as_database_error());
+    assert_eq!(
+        violated.and_then(|error| error.constraint()),
+        Some("attempts_one_active_idx"),
+        "вторая активная попытка нарушает индекс: {second:?}"
+    );
+    let preview = sqlx::query(
+        "INSERT INTO attempts (test_id, user_id, layout, is_preview) VALUES ($1::uuid, $2, '[]', true)",
+    )
+    .bind(&room.test_id)
+    .bind(room.student_id)
+    .execute(&state.db)
+    .await;
+    assert!(preview.is_ok(), "предпросмотр индекс не трогает: {preview:?}");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn dashboard_waits_for_all_stream_attempts_after_close(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(
+        &state,
+        1,
+        json!({ "review_policy": "after_close", "time_limit_minutes": 60 }),
+    )
+    .await;
+    let mine = room.start().await;
+    let (mut other, _) = testing::register(&state, "other@example.com").await;
+    let _joined = other.post(&format!("/api/invites/{}/join", room.invite_token), json!({})).await;
+    let _theirs = other.post(&format!("/api/tests/{}/attempts", room.test_id), json!({})).await;
+    let _done = room.student.post(&attempt_path(&mine, "/submit"), json!({})).await;
+    room.window(json!({ "action": "close" })).await;
+    let (_, dashboard) = room.student.get("/api/dashboard").await;
+    let review = &dashboard["completed"][0]["review"];
+    assert_eq!(review["mode"], "after_close", "статус «после закрытия»: {dashboard}");
+    assert_eq!(review["available"], false, "ещё рано");
+    assert_eq!(review["waiting_for_stream"], true, "ждём завершения всех попыток потока");
+    state.clock.advance(Duration::minutes(61));
+    assert!(sweeper::run_once(&state).await.unwrap(), "проход свипера");
+    let (_, after) = room.student.get("/api/dashboard").await;
+    assert_eq!(after["completed"][0]["review"]["available"], true, "все сдали — результаты есть");
+    assert_eq!(after["completed"][0]["final_score"], "0", "балл виден");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn dashboard_shows_review_date_and_scheduled_tests(db: PgPool) {
+    let state = testing::state(db);
+    let shows = state.clock.now().saturating_add(Duration::days(2)).format(&Rfc3339).unwrap();
+    let policy = json!({ "review_policy": "after_close", "review_not_before": shows });
+    let mut room = Classroom::new(&state, 1, policy).await;
+    let attempt = room.start().await;
+    let _done = room.student.post(&attempt_path(&attempt, "/submit"), json!({})).await;
+    let planned = room.another_test(1, json!({})).await;
+    room.window_of(&planned, json!({ "action": "close" })).await;
+    let opens = state.clock.now().saturating_add(Duration::hours(3)).format(&Rfc3339).unwrap();
+    room.window_of(&planned, json!({ "action": "schedule", "open_at": opens })).await;
+    let (_, dashboard) = room.student.get("/api/dashboard").await;
+    let review = &dashboard["completed"][0]["review"];
+    assert_eq!(review["available"], false, "результаты позже: {dashboard}");
+    assert_eq!(review["mode"], "after_close", "после закрытия");
+    assert_eq!(review["not_before"].as_str(), Some(shows.as_str()), "указана дата показа");
+    assert_eq!(dashboard["scheduled"][0]["test_id"], planned.as_str(), "запланированный тест");
+    assert_eq!(
+        dashboard["scheduled"][0]["opens_at"].as_str(),
+        Some(opens.as_str()),
+        "время открытия"
+    );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn other_device_continues_same_attempt_with_answers_and_timer(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 2, json!({ "time_limit_minutes": 30 })).await;
+    let laptop = room.start().await;
+    let (path, body) = testing::answer_body(&laptop, 0, 1, 1);
+    assert_eq!(room.student.put(&path, body).await.0, StatusCode::OK, "ответ с ноутбука");
+    state.clock.advance(Duration::minutes(5));
+    let mut phone = Client::new(&state);
+    let login = json!({ "email": "student@example.com", "password": testing::PASSWORD });
+    assert_eq!(phone.post("/api/auth/login", login).await.0, StatusCode::OK, "вход с телефона");
+    let (_, started) =
+        phone.post(&format!("/api/tests/{}/attempts", room.test_id), json!({})).await;
+    assert_eq!(started["attempt_id"], laptop["id"], "та же попытка: {started}");
+    assert_eq!(started["resumed"], true, "продолжение");
+    let (_, on_phone) = phone.get(&attempt_path(&laptop, "")).await;
+    assert_eq!(on_phone["deadline_at"], laptop["deadline_at"], "таймер тот же");
+    assert_eq!(
+        on_phone["answers"],
+        room.student.get(&attempt_path(&laptop, "")).await.1["answers"],
+        "ответы те же"
+    );
+    assert_eq!(on_phone["answers"].as_array().map(Vec::len), Some(1), "сохранённый ответ на месте");
 }

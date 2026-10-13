@@ -1,8 +1,14 @@
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
+
 use axum::http::{Method, StatusCode};
 use serde_json::json;
 use sqlx::PgPool;
 use time::Duration;
+use tracing::Level;
+use tracing::subscriber::set_default;
 
+use crate::state::AppState;
 use crate::testing::{self, Client, PASSWORD};
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -201,4 +207,76 @@ async fn blocked_user_cannot_log_in_even_with_right_password(db: PgPool) {
         .post("/api/auth/login", json!({ "email": "ivan@example.com", "password": PASSWORD }))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "заблокирован");
+}
+
+/// Общий буфер байтов.
+type Buffer = Arc<Mutex<Vec<u8>>>;
+
+/// Буфер, куда подписчик tracing пишет JSON-логи.
+#[derive(Clone, Default)]
+struct Captured(Buffer);
+
+impl Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|poisoned| io::Error::other(poisoned.to_string()))?
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Captured {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// Регистрация, вход, сброс пароля и запрос с сессией; возвращает секреты, которых не должно быть в логах.
+async fn login_flow(state: &AppState) -> Vec<String> {
+    let (_, _) = testing::register(state, "ivan@example.com").await;
+    let mut client = Client::new(state);
+    let login = json!({ "email": "ivan@example.com", "password": PASSWORD });
+    assert_eq!(client.post("/api/auth/login", login).await.0, StatusCode::OK, "вход");
+    let cookie = client.session_cookie().unwrap().to_owned();
+    let _me = client.get("/api/auth/me").await;
+    let _ = client.post("/api/auth/password/forgot", json!({ "email": "ivan@example.com" })).await;
+    let token = testing::last_mail_token(state, "reset_password").await;
+    let fresh = "совсем новый секретный пароль 5";
+    let reset = json!({ "token": token, "password": fresh });
+    assert_eq!(
+        client.post("/api/auth/password/reset", reset).await.0,
+        StatusCode::NO_CONTENT,
+        "сброс"
+    );
+    let verify = testing::last_mail_token(state, "verify_email").await;
+    let session_value = cookie.split_once('=').map(|(_, value)| value.to_owned()).unwrap();
+    vec![PASSWORD.to_owned(), fresh.to_owned(), token, verify, session_value]
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn logs_have_requests_but_no_passwords_tokens_or_cookies(db: PgPool) {
+    let state = testing::state(db);
+    let captured = Captured::default();
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .with_max_level(Level::TRACE)
+        .with_current_span(true)
+        .with_span_list(true)
+        .with_writer(move || writer.clone())
+        .finish();
+    let guard = set_default(subscriber);
+    let secrets = login_flow(&state).await;
+    drop(guard);
+    let logs = captured.text();
+    assert!(logs.contains("/api/auth/login"), "запрос входа есть в логе");
+    assert!(logs.contains("request_id"), "у записей есть идентификатор запроса");
+    for secret in &secrets {
+        assert!(!logs.contains(secret.as_str()), "в логе нет секрета «{secret}»");
+    }
 }

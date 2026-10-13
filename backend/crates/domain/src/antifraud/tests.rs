@@ -1,6 +1,6 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{EvidenceKind, LevelTable, LinkLevel, transitive_level};
+use super::{EvidenceKind, LevelTable, LinkLevel, combine_levels, transitive_level};
 
 fn combine(kinds: &[EvidenceKind]) -> Option<LinkLevel> {
     LevelTable::default().combine(&kinds.iter().copied().collect::<BTreeSet<_>>())
@@ -52,5 +52,23 @@ fn transitive_link_takes_weakest_edge() {
         transitive_level(&[LinkLevel::High, LinkLevel::Medium]),
         Some(LinkLevel::Medium),
         "слабейшее ребро"
+    );
+}
+
+#[test]
+fn transitive_medium_and_home_network_become_high() {
+    let levels = BTreeMap::from([
+        (EvidenceKind::TransitiveDevice, LinkLevel::Medium),
+        (EvidenceKind::HomeNetwork, LinkLevel::Medium),
+    ]);
+    assert_eq!(combine_levels(&levels), Some(LinkLevel::High), "два независимых средних");
+}
+
+#[test]
+fn transitive_kind_without_path_is_low() {
+    assert_eq!(
+        combine(&[EvidenceKind::TransitiveDevice]),
+        Some(LinkLevel::Low),
+        "без уровня пути — нижняя граница"
     );
 }

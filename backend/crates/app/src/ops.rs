@@ -1,27 +1,64 @@
 //! Проверки состояния (spec platform-operations, «Наблюдаемость»).
 
+use std::time::Duration as StdDuration;
+
 use axum::extract::State;
 use axum::http::StatusCode;
+use object_store::path::Path as StorePath;
+use tokio::time::timeout;
 
 use crate::state::AppState;
 
 #[cfg(test)]
 mod tests;
 
+/// Сколько ждать ответа каждой зависимости в проверке готовности.
+const CHECK_TIMEOUT: StdDuration = StdDuration::from_secs(3);
+/// Префикс, по которому проверка готовности перечисляет объекты (там ничего не лежит).
+const PROBE_PREFIX: &str = "health-check";
+
 /// Процесс жив.
 pub(crate) async fn live() -> &'static str {
     "ok"
 }
 
-/// Готов обслуживать запросы: база отвечает.
+/// Готов обслуживать запросы: отвечают база и объектное хранилище.
 pub(crate) async fn ready(State(state): State<AppState>) -> (StatusCode, &'static str) {
-    match sqlx::query("SELECT 1").execute(&state.db).await {
-        Ok(_) => (StatusCode::OK, "ok"),
-        Err(error) => {
-            tracing::error!(%error, "база недоступна");
-            (StatusCode::SERVICE_UNAVAILABLE, "database unavailable")
-        }
+    match dependencies_ready(&state).await {
+        Ok(()) => (StatusCode::OK, "ok"),
+        Err(failed) => (StatusCode::SERVICE_UNAVAILABLE, failed),
     }
+}
+
+/// Проверяет зависимости по очереди; ошибка — текст ответа о первой недоступной.
+///
+/// cancel-safe: yes — только чтение.
+async fn dependencies_ready(state: &AppState) -> Result<(), &'static str> {
+    database_ready(state).await.map_err(|error| unavailable("database unavailable", &error))?;
+    storage_ready(state).await.map_err(|error| unavailable("storage unavailable", &error))
+}
+
+/// Пишет причину в журнал и возвращает текст ответа.
+fn unavailable(failed: &'static str, error: &anyhow::Error) -> &'static str {
+    tracing::error!(%error, failed, "проверка готовности не прошла");
+    failed
+}
+
+/// База выполняет запрос.
+///
+/// cancel-safe: yes — только чтение.
+async fn database_ready(state: &AppState) -> anyhow::Result<()> {
+    let _row = timeout(CHECK_TIMEOUT, sqlx::query("SELECT 1").execute(&state.db)).await??;
+    Ok(())
+}
+
+/// Хранилище перечисляет объекты бакета: проверяются адрес, ключ доступа и сам бакет.
+///
+/// cancel-safe: yes — только чтение.
+async fn storage_ready(state: &AppState) -> anyhow::Result<()> {
+    let prefix = StorePath::from(PROBE_PREFIX);
+    let _listing = timeout(CHECK_TIMEOUT, state.blobs.list_with_delimiter(Some(&prefix))).await??;
+    Ok(())
 }
 
 use std::fmt::Write as _;

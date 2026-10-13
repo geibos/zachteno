@@ -1,6 +1,6 @@
 //! Уровни связей между аккаунтами (spec `antifraud-signals`, design D14).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -32,6 +32,9 @@ pub enum EvidenceKind {
     SharedRareDevice,
     /// Общий распространённый отпечаток устройства.
     SharedCommonDevice,
+    /// Транзитивная связь через общее устройство: оба аккаунта делили браузер или редкое
+    /// устройство с третьим аккаунтом. Уровень — самого слабого ребра пути ([`transitive_level`]).
+    TransitiveDevice,
     /// Общая домашняя сеть в разные дни.
     HomeNetwork,
     /// Один вышел — другой вошёл из той же сети или с того же устройства.
@@ -81,7 +84,8 @@ impl Default for LevelTable {
 impl LevelTable {
     /// Уровень одного вида совпадения.
     ///
-    /// Сигналы общего пользования и распространённые отпечатки всегда низкие.
+    /// Сигналы общего пользования и распространённые отпечатки всегда низкие. Уровень
+    /// транзитивной связи зависит от пути ([`transitive_level`]); без пути — низкий.
     #[must_use]
     pub const fn level_of(self, kind: EvidenceKind) -> LinkLevel {
         match kind {
@@ -92,6 +96,7 @@ impl LevelTable {
             EvidenceKind::IdenticalFreeText | EvidenceKind::MatchingMistakes => self.answers,
             EvidenceKind::TypingSimilarity => self.typing,
             EvidenceKind::SharedCommonDevice
+            | EvidenceKind::TransitiveDevice
             | EvidenceKind::RegistrationPattern
             | EvidenceKind::SharedPublicNetwork => LinkLevel::Low,
         }
@@ -102,11 +107,18 @@ impl LevelTable {
     /// Максимум отдельных уровней; два разных средних сигнала дают высокий.
     #[must_use]
     pub fn combine(self, kinds: &BTreeSet<EvidenceKind>) -> Option<LinkLevel> {
-        let strongest = kinds.iter().map(|kind| self.level_of(*kind)).max()?;
-        let medium_count =
-            kinds.iter().filter(|kind| self.level_of(**kind) == LinkLevel::Medium).count();
-        Some(if medium_count >= 2 { LinkLevel::High } else { strongest })
+        combine_levels(&kinds.iter().map(|kind| (*kind, self.level_of(*kind))).collect())
     }
+}
+
+/// Итоговый уровень связи по уровням разных видов совпадений.
+///
+/// Максимум уровней; два разных вида среднего уровня дают высокий.
+#[must_use]
+pub fn combine_levels(levels: &BTreeMap<EvidenceKind, LinkLevel>) -> Option<LinkLevel> {
+    let strongest = levels.values().copied().max()?;
+    let medium_count = levels.values().filter(|level| **level == LinkLevel::Medium).count();
+    Some(if medium_count >= 2 { LinkLevel::High } else { strongest })
 }
 
 /// Уровень транзитивной связи: уровень самого слабого ребра пути.

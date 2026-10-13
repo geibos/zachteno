@@ -18,3 +18,4 @@ test-results/
 .omo/
 .opencode/
 backend/data/
+.playwright-mcp/

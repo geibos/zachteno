@@ -8,6 +8,9 @@ use axum::response::{IntoResponse as _, Response};
 use crate::error::AppError;
 use crate::state::AppState;
 
+#[cfg(test)]
+mod tests;
+
 /// Изменяющие запросы к `/api` принимаются только с `Origin` нашего сайта.
 pub(crate) async fn csrf(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let safe = matches!(*request.method(), Method::GET | Method::HEAD | Method::OPTIONS);

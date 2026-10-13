@@ -3297,6 +3297,7 @@
           "shared_marker",
           "shared_rare_device",
           "shared_common_device",
+          "transitive_device",
           "home_network",
           "session_handoff",
           "identical_free_text",

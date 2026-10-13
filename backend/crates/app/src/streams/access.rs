@@ -9,6 +9,9 @@ use crate::error::{ApiResult, AppError};
 /// Управляет ли пользователь потоком: создатель, суперпользователь, преподаватель или
 /// методист-владелец курса, на который назначен поток.
 ///
+/// «Нет доступа» отвечаем только методисту (он видит все курсы); остальным — «не найдено»,
+/// неотличимо от несуществующего потока (spec access-control).
+///
 /// cancel-safe: yes — только чтение.
 pub(crate) async fn require_manager<'conn>(
     executor: impl PgExecutor<'conn>,
@@ -29,8 +32,8 @@ pub(crate) async fn require_manager<'conn>(
     .await?;
     match found {
         Some(true) => Ok(()),
-        Some(false) => Err(AppError::Forbidden),
-        None => Err(AppError::NotFound),
+        Some(false) if user.roles.methodist => Err(AppError::Forbidden),
+        Some(false) | None => Err(AppError::NotFound),
     }
 }
 

@@ -380,7 +380,7 @@ async fn ensure_not_blocked(tx: &mut PgConnection, user_id: Uuid) -> Result<(), 
     if blocked { Err("blocked") } else { Ok(()) }
 }
 
-/// Запись аудит-лога о входе или регистрации через Яндекс.
+/// Запись аудит-лога о входе, регистрации или привязке аккаунта Яндекса.
 ///
 /// cancel-safe: yes — в транзакции вызывающего.
 async fn audit(
@@ -416,7 +416,11 @@ async fn resolve_user(
     match (linked, pending.link_user_id) {
         (Some(owner), Some(target)) if owner != target => Err("already_linked"),
         (Some(owner), _) => Ok(owner),
-        (None, Some(target)) => link(tx, target, profile).await.map(|()| target),
+        (None, Some(target)) => {
+            link(tx, target, profile).await?;
+            audit(tx, "auth.identity_link", target, ip).await?;
+            Ok(target)
+        }
         (None, None) => register(tx, profile, pending, ip).await,
     }
 }

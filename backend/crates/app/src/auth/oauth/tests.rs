@@ -85,7 +85,7 @@ async fn forged_state_is_rejected(db: PgPool) {
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
 async fn logged_in_user_links_yandex_and_can_unlink(db: PgPool) {
     let state = testing::state_with_yandex(db, &mock_yandex("other@yandex.ru").await);
-    let (mut client, _user) = testing::register(&state, "ivan@example.com").await;
+    let (mut client, user_id) = testing::register(&state, "ivan@example.com").await;
     let state_token = begin(&mut client, "?intent=link&next=/profile").await;
     assert_eq!(finish(&mut client, &state_token).await, "/profile", "привязка");
     let (_, identities) = client.get("/api/profile/identities").await;
@@ -100,6 +100,19 @@ async fn logged_in_user_links_yandex_and_can_unlink(db: PgPool) {
         client.delete("/api/profile/identities/yandex").await.0,
         StatusCode::NO_CONTENT,
         "отвязка"
+    );
+    let audited: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_log WHERE actor_id = $1 AND object_id = $1 AND ip IS NOT NULL
+           AND action IN ('auth.identity_link', 'auth.identity_unlink') ORDER BY id",
+    )
+    .bind(user_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        audited,
+        ["auth.identity_link", "auth.identity_unlink"],
+        "привязка и отвязка в аудите"
     );
 }
 

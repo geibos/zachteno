@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use domain::antifraud::{EvidenceKind, LevelTable, LinkLevel};
+use domain::antifraud::{EvidenceKind, LevelTable, LinkLevel, combine_levels, transitive_level};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use sqlx::types::Json;
@@ -29,12 +29,21 @@ const PUBLIC_NETWORK_USERS: i64 = 5;
 const RARE_DEVICE_USERS: i64 = 3;
 /// Не больше стольких связей по сети общего пользования на пользователя.
 const PUBLIC_LINK_CAP: i64 = 50;
+/// Не больше стольких аккаунтов-посредников при поиске транзитивных связей.
+const BRIDGE_CAP: usize = 50;
+/// Основания «общее устройство», из которых складываются пути графа устройств. Распространённый
+/// отпечаток сюда не входит: он не означает одно и то же устройство (компьютерный класс).
+const DEVICE_KINDS: [EvidenceKind; 2] =
+    [EvidenceKind::SharedMarker, EvidenceKind::SharedRareDevice];
 
 #[derive(FromRow)]
 struct Hit {
     other: Uuid,
     at: Option<OffsetDateTime>,
     extra: i64,
+    /// Дни совпадения по МСК (только у запроса общей сети).
+    #[sqlx(default)]
+    days: Option<String>,
 }
 
 /// Основания по каждому связанному пользователю; упорядочено по id, чтобы лимит связей
@@ -81,7 +90,8 @@ const SHARED_NETWORK: &str = "
     WITH mine AS (SELECT DISTINCT ip FROM signals WHERE user_id = $1 AND ip IS NOT NULL AND NOT hosting),
          crowd AS (SELECT s.ip, count(DISTINCT s.user_id) AS users FROM signals s JOIN mine USING (ip) WHERE s.at > $2 GROUP BY s.ip)
     SELECT s.user_id AS other, max(s.at) AS at,
-           CASE WHEN max(c.users) <= 3 THEN count(DISTINCT date_trunc('day', s.at)) ELSE -max(c.users) END AS extra
+           CASE WHEN max(c.users) <= 3 THEN count(DISTINCT date_trunc('day', s.at)) ELSE -max(c.users) END AS extra,
+           string_agg(DISTINCT to_char(s.at AT TIME ZONE 'Europe/Moscow', 'YYYY-MM-DD'), ', ') AS days
     FROM signals s JOIN crowd c USING (ip)
     WHERE s.user_id <> $1 GROUP BY s.user_id, s.ip LIMIT 200";
 
@@ -129,9 +139,32 @@ fn describe_network(hit: &Hit) -> Described {
         ));
     }
     (hit.extra >= 2).then(|| {
-        (EvidenceKind::HomeNetwork, format!("общая домашняя сеть, {} разных дней", hit.extra))
+        let days = hit.days.as_deref().unwrap_or_default();
+        (
+            EvidenceKind::HomeNetwork,
+            format!("общая домашняя сеть, {} разных дней: {days}", hit.extra),
+        )
     })
 }
+
+/// Общий маркер браузера.
+const DESCRIBE_MARKER: Describe =
+    |_| Some((EvidenceKind::SharedMarker, "один и тот же браузер (маркер)".to_owned()));
+
+/// Общий отпечаток устройства: редкий или распространённый.
+const DESCRIBE_DEVICE: Describe = |hit| {
+    Some(if hit.extra <= RARE_DEVICE_USERS {
+        (EvidenceKind::SharedRareDevice, "одно и то же устройство (отпечаток редкий)".to_owned())
+    } else {
+        (
+            EvidenceKind::SharedCommonDevice,
+            format!(
+                "одинаковый отпечаток устройства — распространённый, у {} пользователей",
+                hit.extra
+            ),
+        )
+    })
+};
 
 fn describe_mistakes(hit: &Hit) -> Described {
     (hit.extra >= 2).then(|| {
@@ -142,27 +175,14 @@ fn describe_mistakes(hit: &Hit) -> Described {
 /// Запрос совпадений и его толкование.
 type Source = (&'static str, Describe);
 
+/// Запросы рёбер графа устройств: общий браузер и общее устройство.
+const DEVICE_SOURCES: [Source; 2] =
+    [(SHARED_MARKER, DESCRIBE_MARKER), (SHARED_DEVICE, DESCRIBE_DEVICE)];
+
 /// Запросы совпадений в порядке выполнения.
 const SOURCES: [Source; 7] = [
-    (SHARED_MARKER, |_| {
-        Some((EvidenceKind::SharedMarker, "один и тот же браузер (маркер)".to_owned()))
-    }),
-    (SHARED_DEVICE, |hit| {
-        Some(if hit.extra <= RARE_DEVICE_USERS {
-            (
-                EvidenceKind::SharedRareDevice,
-                "одно и то же устройство (отпечаток редкий)".to_owned(),
-            )
-        } else {
-            (
-                EvidenceKind::SharedCommonDevice,
-                format!(
-                    "одинаковый отпечаток устройства — распространённый, у {} пользователей",
-                    hit.extra
-                ),
-            )
-        })
-    }),
+    (SHARED_MARKER, DESCRIBE_MARKER),
+    (SHARED_DEVICE, DESCRIBE_DEVICE),
     (SHARED_NETWORK, describe_network),
     (SESSION_HANDOFF, |_| {
         Some((
@@ -195,7 +215,93 @@ pub(crate) async fn recompute(state: &AppState, user_id: Uuid) -> ApiResult<()> 
         add(&mut found, hits(state, sql, user_id, since).await?, describe);
     }
     add_typing(state, user_id, &mut found).await?;
-    save(state, user_id, found).await
+    let bridged = add_transitive(state, user_id, since, &mut found).await?;
+    save(state, user_id, found, &bridged).await
+}
+
+/// Уровни транзитивных связей по связанному пользователю.
+type Bridged = BTreeMap<Uuid, LinkLevel>;
+
+/// Уровень ребра «общее устройство» до каждого соседа по графу устройств.
+fn device_edges(found: &Found, table: LevelTable) -> Bridged {
+    found
+        .iter()
+        .filter_map(|(other, evidence)| {
+            evidence
+                .iter()
+                .filter(|piece| DEVICE_KINDS.contains(&piece.kind))
+                .map(|piece| table.level_of(piece.kind))
+                .max()
+                .map(|level| (*other, level))
+        })
+        .collect()
+}
+
+/// Соседи пользователя по графу устройств: общий браузер или общее устройство.
+///
+/// cancel-safe: yes — только чтение.
+async fn device_neighbours(
+    state: &AppState,
+    user_id: Uuid,
+    since: OffsetDateTime,
+) -> ApiResult<Found> {
+    let mut found = Found::new();
+    for (sql, describe) in DEVICE_SOURCES {
+        add(&mut found, hits(state, sql, user_id, since).await?, describe);
+    }
+    Ok(found)
+}
+
+/// Транзитивные связи через общее устройство (spec «Граф устройств», design D14): аккаунт B
+/// связан с пользователем, если оба делили браузер или редкое устройство с аккаунтом-посредником,
+/// а прямого общего устройства у них нет. Уровень — самого слабого ребра пути, из нескольких
+/// путей берётся лучший.
+///
+/// cancel-safe: yes — только чтение; найденное добавляется в `found`.
+async fn add_transitive(
+    state: &AppState,
+    user_id: Uuid,
+    since: OffsetDateTime,
+    found: &mut Found,
+) -> ApiResult<Bridged> {
+    let table = LevelTable::default();
+    let direct = device_edges(found, table);
+    let mut bridged = Bridged::new();
+    for (bridge, first_hop) in direct.iter().take(BRIDGE_CAP) {
+        let second = device_edges(&device_neighbours(state, *bridge, since).await?, table);
+        let beyond = second
+            .into_iter()
+            .filter(|(other, _)| *other != user_id && !direct.contains_key(other));
+        extend_paths(&mut bridged, *first_hop, beyond);
+    }
+    for other in bridged.keys() {
+        found.entry(*other).or_default().push(transitive_evidence());
+    }
+    Ok(bridged)
+}
+
+/// Добавляет пути «пользователь → посредник → другой»; у пути уровень слабейшего ребра.
+fn extend_paths(
+    bridged: &mut Bridged,
+    first_hop: LinkLevel,
+    second: impl Iterator<Item = (Uuid, LinkLevel)>,
+) {
+    for (other, second_hop) in second {
+        if let Some(level) = transitive_level(&[first_hop, second_hop]) {
+            let _best =
+                bridged.entry(other).and_modify(|best| *best = (*best).max(level)).or_insert(level);
+        }
+    }
+}
+
+fn transitive_evidence() -> Evidence {
+    Evidence {
+        kind: EvidenceKind::TransitiveDevice,
+        detail: "транзитивная связь: оба аккаунта пользовались общим браузером или устройством \
+                 третьего аккаунта"
+            .to_owned(),
+        at: None,
+    }
 }
 
 #[derive(FromRow)]
@@ -258,12 +364,31 @@ fn push_typing(found: &mut Found, rows: &[TypingRow], user_id: Uuid) {
     }
 }
 
-async fn save(state: &AppState, user_id: Uuid, found: Found) -> ApiResult<()> {
+/// Уровни видов совпадений с одним пользователем; транзитивный — по пути из `bridged`.
+fn levels_of(
+    table: LevelTable,
+    kinds: &BTreeSet<EvidenceKind>,
+    path: Option<LinkLevel>,
+) -> BTreeMap<EvidenceKind, LinkLevel> {
+    kinds
+        .iter()
+        .map(|kind| {
+            let level = match (kind, path) {
+                (EvidenceKind::TransitiveDevice, Some(path_level)) => path_level,
+                _ => table.level_of(*kind),
+            };
+            (*kind, level)
+        })
+        .collect()
+}
+
+async fn save(state: &AppState, user_id: Uuid, found: Found, bridged: &Bridged) -> ApiResult<()> {
     let table = LevelTable::default();
     let mut public_links = 0_i64;
     for (other, evidence) in found {
         let kinds: BTreeSet<EvidenceKind> = evidence.iter().map(|piece| piece.kind).collect();
-        let Some(level) = table.combine(&kinds) else { continue };
+        let levels = levels_of(table, &kinds, bridged.get(&other).copied());
+        let Some(level) = combine_levels(&levels) else { continue };
         if kinds.iter().all(|kind| *kind == EvidenceKind::SharedPublicNetwork) {
             public_links = public_links.saturating_add(1);
             if public_links > PUBLIC_LINK_CAP {

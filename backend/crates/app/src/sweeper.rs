@@ -8,8 +8,12 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::attempts::lifecycle::{self, SubmitReason};
+use crate::audit::AuditEntry;
 use crate::error::ApiResult;
 use crate::state::AppState;
+
+#[cfg(test)]
+mod tests;
 
 /// Интервал между проходами.
 const INTERVAL: StdDuration = StdDuration::from_secs(15);
@@ -64,8 +68,8 @@ async fn sweep(state: &AppState, connection: &mut PgConnection) -> ApiResult<()>
 /// Попытка и её срок.
 type Deadline = (Uuid, OffsetDateTime);
 
-/// Окно: тест и поток.
-type Window = (Uuid, Uuid);
+/// Окно, изменённое по расписанию: тест, поток и курс теста.
+type ScheduledWindow = (Uuid, Uuid, Uuid);
 
 async fn submit_expired(state: &AppState, now: OffsetDateTime) -> ApiResult<()> {
     let expired: Vec<Deadline> = sqlx::query_as(
@@ -88,17 +92,25 @@ async fn apply_schedules(state: &AppState, now: OffsetDateTime) -> ApiResult<()>
     close_scheduled(state, now).await
 }
 
-/// Открывает окна, у которых наступило время открытия.
+/// Открывает окна, у которых наступило время открытия, и пишет это в аудит-лог.
 ///
-/// cancel-safe: yes — один UPDATE.
+/// cancel-safe: yes — одна транзакция.
 async fn open_scheduled(state: &AppState, now: OffsetDateTime) -> ApiResult<()> {
-    let _opened = sqlx::query(
-        "UPDATE test_windows SET is_open = true, open_at = NULL, closed_at = NULL, updated_at = $1
-         WHERE NOT is_open AND open_at IS NOT NULL AND open_at <= $1 AND (close_at IS NULL OR close_at > $1)",
+    let mut tx = state.db.begin().await?;
+    let opened: Vec<ScheduledWindow> = sqlx::query_as(
+        "UPDATE test_windows w SET is_open = true, open_at = NULL, closed_at = NULL, updated_at = $1
+         FROM tests t
+         WHERE t.id = w.test_id AND NOT w.is_open AND w.open_at IS NOT NULL AND w.open_at <= $1
+           AND (w.close_at IS NULL OR w.close_at > $1)
+         RETURNING w.test_id, w.stream_id, t.course_id",
     )
     .bind(now)
-    .execute(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
+    for window in opened {
+        audit_scheduled(&mut tx, "window.open", window).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -106,19 +118,40 @@ async fn open_scheduled(state: &AppState, now: OffsetDateTime) -> ApiResult<()> 
 ///
 /// cancel-safe: yes — каждое окно в своей транзакции.
 async fn close_scheduled(state: &AppState, now: OffsetDateTime) -> ApiResult<()> {
-    let closing: Vec<Window> = sqlx::query_as(
-        "UPDATE test_windows SET is_open = false, close_at = NULL, closed_at = $1, updated_at = $1
-         WHERE close_at IS NOT NULL AND close_at <= $1 AND (is_open OR open_at IS NOT NULL)
-         RETURNING test_id, stream_id",
+    let closing: Vec<ScheduledWindow> = sqlx::query_as(
+        "UPDATE test_windows w SET is_open = false, close_at = NULL, closed_at = $1, updated_at = $1
+         FROM tests t
+         WHERE t.id = w.test_id AND w.close_at IS NOT NULL AND w.close_at <= $1
+           AND (w.is_open OR w.open_at IS NOT NULL)
+         RETURNING w.test_id, w.stream_id, t.course_id",
     )
     .bind(now)
     .fetch_all(&state.db)
     .await?;
     for window in closing {
+        let (test_id, stream_id, _course_id) = window;
         let mut tx = state.db.begin().await?;
-        lifecycle::close_untimed(&mut tx, window, now).await?;
+        lifecycle::close_untimed(&mut tx, (test_id, stream_id), now).await?;
+        audit_scheduled(&mut tx, "window.close", window).await?;
         tx.commit().await?;
     }
+    Ok(())
+}
+
+/// Запись аудит-лога об открытии или закрытии окна по расписанию (исполнитель — система).
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn audit_scheduled(
+    tx: &mut PgConnection,
+    action: &'static str,
+    (test_id, stream_id, course_id): ScheduledWindow,
+) -> ApiResult<()> {
+    AuditEntry::new(action, "test")
+        .on(test_id)
+        .in_course(course_id)
+        .with(serde_json::json!({ "stream_id": stream_id, "test_id": test_id, "scheduled": true }))
+        .record(&mut *tx)
+        .await?;
     Ok(())
 }
 

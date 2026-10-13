@@ -1407,7 +1407,7 @@ export interface components {
          * @description Вид совпадения, на котором основана связь.
          * @enum {string}
          */
-        EvidenceKind: "shared_marker" | "shared_rare_device" | "shared_common_device" | "home_network" | "session_handoff" | "identical_free_text" | "matching_mistakes" | "typing_similarity" | "registration_pattern" | "shared_public_network";
+        EvidenceKind: "shared_marker" | "shared_rare_device" | "shared_common_device" | "transitive_device" | "home_network" | "session_handoff" | "identical_free_text" | "matching_mistakes" | "typing_similarity" | "registration_pattern" | "shared_public_network";
         /**
          * @description Как выбирается итоговый балл из сданных попыток.
          * @enum {string}

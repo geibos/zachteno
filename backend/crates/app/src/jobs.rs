@@ -9,6 +9,9 @@ use time::{Duration, OffsetDateTime};
 
 use crate::state::AppState;
 
+#[cfg(test)]
+mod tests;
+
 /// Виды задач.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JobKind {

@@ -137,9 +137,15 @@ fn report_seed(seeded: &Seeded) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// JSON-логи; поля span-а запроса (`request_id`, маршрут) попадают в каждую запись.
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().json().with_env_filter(filter).with_current_span(false).init();
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .with_current_span(true)
+        .with_span_list(false)
+        .init();
 }
 
 /// cancel-safe: yes — завершается по Ctrl+C/SIGTERM с корректной остановкой.

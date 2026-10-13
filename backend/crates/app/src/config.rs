@@ -11,6 +11,12 @@ use ipnet::IpNet;
 
 use crate::secret::Secret;
 
+#[cfg(test)]
+mod tests;
+
+/// Источник переменных окружения: имя → значение (процесс или словарь в тестах).
+pub(crate) type EnvSource<'source> = &'source dyn Fn(&str) -> Option<String>;
+
 /// Перцы паролей по номеру версии.
 pub(crate) type PepperMap = BTreeMap<u32, Vec<u8>>;
 type Pepper = (u32, Vec<u8>);
@@ -86,41 +92,47 @@ pub(crate) struct OAuthClient {
 }
 
 impl Config {
-    /// Читает конфигурацию; без перца и ключа сигналов запуск невозможен.
+    /// Читает конфигурацию из окружения процесса.
     pub(crate) fn from_env() -> anyhow::Result<Self> {
+        Self::from_vars(&|name| env::var(name).ok())
+    }
+
+    /// Читает конфигурацию из источника `source`; без перца и ключа сигналов запуск невозможен
+    /// (spec identity-auth, «Нет перца»).
+    pub(crate) fn from_vars(source: EnvSource<'_>) -> anyhow::Result<Self> {
         Ok(Self {
-            http: http_from_env()?,
+            http: http_from_env(source)?,
             database: DatabaseConfig {
-                app: Secret::new(required("DATABASE_URL")?),
-                migrations: Secret::new(required("MIGRATION_DATABASE_URL")?),
+                app: Secret::new(required(source, "DATABASE_URL")?),
+                migrations: Secret::new(required(source, "MIGRATION_DATABASE_URL")?),
             },
-            secrets: secrets_from_env()?,
-            storage: storage_from_env()?,
-            mail: mail_from_env()?,
-            yandex: yandex_from_env(),
-            signal_retention_days: optional("SIGNAL_RETENTION_DAYS", "365").parse()?,
-            asn_db_path: env::var("ASN_DB_PATH").ok().filter(|path| !path.is_empty()),
+            secrets: secrets_from_env(source)?,
+            storage: storage_from_env(source)?,
+            mail: mail_from_env(source)?,
+            yandex: yandex_from_env(source),
+            signal_retention_days: optional(source, "SIGNAL_RETENTION_DAYS", "365").parse()?,
+            asn_db_path: source("ASN_DB_PATH").filter(|path| !path.is_empty()),
         })
     }
 }
 
-fn required(name: &str) -> anyhow::Result<String> {
-    env::var(name).with_context(|| format!("переменная окружения {name} не задана"))
+fn required(source: EnvSource<'_>, name: &str) -> anyhow::Result<String> {
+    source(name).with_context(|| format!("переменная окружения {name} не задана"))
 }
 
-fn optional(name: &str, default: &str) -> String {
-    env::var(name).unwrap_or_else(|_| default.to_owned())
+fn optional(source: EnvSource<'_>, name: &str, default: &str) -> String {
+    source(name).unwrap_or_else(|| default.to_owned())
 }
 
-fn http_from_env() -> anyhow::Result<HttpConfig> {
-    let proxies = optional("TRUSTED_PROXIES", "");
+fn http_from_env(source: EnvSource<'_>) -> anyhow::Result<HttpConfig> {
+    let proxies = optional(source, "TRUSTED_PROXIES", "");
     Ok(HttpConfig {
-        bind: optional("BIND", "0.0.0.0:8080").parse()?,
-        metrics_bind: optional("METRICS_BIND", "127.0.0.1:9100").parse()?,
-        public_url: optional("PUBLIC_URL", "http://localhost:8080")
+        bind: optional(source, "BIND", "0.0.0.0:8080").parse()?,
+        metrics_bind: optional(source, "METRICS_BIND", "127.0.0.1:9100").parse()?,
+        public_url: optional(source, "PUBLIC_URL", "http://localhost:8080")
             .trim_end_matches('/')
             .to_owned(),
-        extra_origins: optional("EXTRA_ORIGINS", "")
+        extra_origins: optional(source, "EXTRA_ORIGINS", "")
             .split(',')
             .map(str::trim)
             .filter(|origin| !origin.is_empty())
@@ -138,9 +150,10 @@ fn parse_proxies(list: &str) -> anyhow::Result<Vec<IpNet>> {
         .collect()
 }
 
-fn secrets_from_env() -> anyhow::Result<Secrets> {
-    let peppers = parse_peppers(&required("PASSWORD_PEPPERS")?)?;
-    let signal_key = STANDARD.decode(required("SIGNAL_HMAC_KEY")?).context("SIGNAL_HMAC_KEY")?;
+fn secrets_from_env(source: EnvSource<'_>) -> anyhow::Result<Secrets> {
+    let peppers = parse_peppers(&required(source, "PASSWORD_PEPPERS")?)?;
+    let signal_key =
+        STANDARD.decode(required(source, "SIGNAL_HMAC_KEY")?).context("SIGNAL_HMAC_KEY")?;
     if signal_key.len() < 32 {
         bail!("SIGNAL_HMAC_KEY короче 32 байт");
     }
@@ -171,42 +184,45 @@ fn parse_pepper(part: &str) -> anyhow::Result<Pepper> {
     Ok((version.parse()?, secret))
 }
 
-fn storage_from_env() -> anyhow::Result<StorageConfig> {
+fn storage_from_env(source: EnvSource<'_>) -> anyhow::Result<StorageConfig> {
     Ok(StorageConfig {
-        endpoint: required("S3_ENDPOINT")?,
-        region: optional("S3_REGION", "garage"),
-        bucket: optional("S3_BUCKET", "attachments"),
-        access_key_id: required("S3_ACCESS_KEY_ID")?,
-        secret_access_key: Secret::new(required("S3_SECRET_ACCESS_KEY")?),
+        endpoint: required(source, "S3_ENDPOINT")?,
+        region: optional(source, "S3_REGION", "garage"),
+        bucket: optional(source, "S3_BUCKET", "attachments"),
+        access_key_id: required(source, "S3_ACCESS_KEY_ID")?,
+        secret_access_key: Secret::new(required(source, "S3_SECRET_ACCESS_KEY")?),
     })
 }
 
-fn mail_from_env() -> anyhow::Result<MailConfig> {
-    let from = optional("MAIL_FROM", "Зачтено <no-reply@localhost>");
-    match optional("MAIL_MODE", "directory").as_str() {
+fn mail_from_env(source: EnvSource<'_>) -> anyhow::Result<MailConfig> {
+    let from = optional(source, "MAIL_FROM", "Зачтено <no-reply@localhost>");
+    match optional(source, "MAIL_MODE", "directory").as_str() {
         "smtp" => Ok(MailConfig::Smtp {
-            host: required("SMTP_HOST")?,
-            port: optional("SMTP_PORT", "587").parse()?,
-            username: required("SMTP_USERNAME")?,
-            password: Secret::new(required("SMTP_PASSWORD")?),
+            host: required(source, "SMTP_HOST")?,
+            port: optional(source, "SMTP_PORT", "587").parse()?,
+            username: required(source, "SMTP_USERNAME")?,
+            password: Secret::new(required(source, "SMTP_PASSWORD")?),
             from,
         }),
         "directory" => {
-            Ok(MailConfig::Directory { path: optional("MAIL_DIR", "./data/mail"), from })
+            Ok(MailConfig::Directory { path: optional(source, "MAIL_DIR", "./data/mail"), from })
         }
         other => bail!("MAIL_MODE={other}: допустимо smtp или directory"),
     }
 }
 
-fn yandex_from_env() -> Option<OAuthClient> {
-    let client_id = env::var("YANDEX_CLIENT_ID").ok().filter(|client| !client.is_empty())?;
-    let client_secret =
-        env::var("YANDEX_CLIENT_SECRET").ok().filter(|secret| !secret.is_empty())?;
+fn yandex_from_env(source: EnvSource<'_>) -> Option<OAuthClient> {
+    let client_id = source("YANDEX_CLIENT_ID").filter(|client| !client.is_empty())?;
+    let client_secret = source("YANDEX_CLIENT_SECRET").filter(|secret| !secret.is_empty())?;
     Some(OAuthClient {
         client_id,
         client_secret: Secret::new(client_secret),
-        authorize_url: optional("YANDEX_AUTHORIZE_URL", "https://oauth.yandex.ru/authorize"),
-        token_url: optional("YANDEX_TOKEN_URL", "https://oauth.yandex.ru/token"),
-        userinfo_url: optional("YANDEX_USERINFO_URL", "https://login.yandex.ru/info"),
+        authorize_url: optional(
+            source,
+            "YANDEX_AUTHORIZE_URL",
+            "https://oauth.yandex.ru/authorize",
+        ),
+        token_url: optional(source, "YANDEX_TOKEN_URL", "https://oauth.yandex.ru/token"),
+        userinfo_url: optional(source, "YANDEX_USERINFO_URL", "https://login.yandex.ru/info"),
     })
 }

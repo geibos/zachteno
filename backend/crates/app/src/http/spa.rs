@@ -77,7 +77,9 @@ fn asset_response(path: &str, bytes: Vec<u8>) -> Response {
 
 fn index_response() -> Response {
     let Some(index) = Assets::get("index.html") else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "Фронтенд не собран").into_response();
+        let mut unbuilt = (StatusCode::SERVICE_UNAVAILABLE, "Фронтенд не собран").into_response();
+        insert(&mut unbuilt, header::CONTENT_SECURITY_POLICY, &CSP);
+        return unbuilt;
     };
     let mut response = Response::new(Body::from(index.data.into_owned()));
     insert(&mut response, header::CONTENT_TYPE, "text/html; charset=utf-8");

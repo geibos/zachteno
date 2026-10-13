@@ -1,12 +1,16 @@
 use std::io::Cursor;
+use std::time::{Duration as StdDuration, Instant};
 
 use axum::http::StatusCode;
 use serde_json::{Value as Json, json};
 use sqlx::PgPool;
+use tokio::time::sleep;
 use uuid::Uuid;
 
+use crate::auth::session::{CurrentUser, Roles};
+use crate::authoring::quizzes::lock_for_edit;
 use crate::state::AppState;
-use crate::testing::{self, Client};
+use crate::testing::{self, Classroom, Client};
 
 async fn methodist(state: &AppState, email: &str) -> (Client, Uuid) {
     let (client, user_id) = testing::register(state, email).await;
@@ -228,4 +232,113 @@ async fn image_upload_and_access_checks(db: PgPool) {
     let (rejected, _) =
         owner.multipart("/api/attachments", ("file", "doc.pdf"), b"%PDF-1.7".to_vec()).await;
     assert_eq!(rejected, StatusCode::BAD_REQUEST, "не картинка");
+}
+
+/// Методист с черновиком теста из одного вопроса (верен вариант 1).
+async fn draft(state: &AppState) -> (Client, String) {
+    let (mut owner, _) = methodist(state, "m@example.com").await;
+    let course_id = course(&mut owner).await;
+    let test_id = test_in(&mut owner, &course_id).await;
+    let (added, body) = owner.post(&format!("/api/tests/{test_id}/questions"), single(1)).await;
+    assert_eq!(added, StatusCode::CREATED, "вопрос: {body}");
+    (owner, test_id)
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn draft_preview_shows_score_and_review_but_leaves_no_results(db: PgPool) {
+    let state = testing::state(db);
+    let (mut owner, test_id) = draft(&state).await;
+    let (status, started) = owner.post(&format!("/api/tests/{test_id}/preview"), json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "предпросмотр черновика: {started}");
+    let attempt_id = started["attempt_id"].as_str().unwrap();
+    let (_, attempt) = owner.get(&format!("/api/attempts/{attempt_id}")).await;
+    let (path, body) = testing::answer_body(&attempt, 0, 1, 1);
+    assert_eq!(owner.put(&path, body).await.0, StatusCode::OK, "ответ в предпросмотре");
+    let _done = owner.post(&format!("/api/attempts/{attempt_id}/submit"), json!({})).await;
+    let (_, review) = owner.get(&format!("/api/attempts/{attempt_id}/review")).await;
+    assert_eq!(review["score"], "1", "балл виден: {review}");
+    assert_eq!(review["questions"][0]["options"][1]["is_correct"], true, "разбор виден");
+    let (_, test) = owner.get(&format!("/api/tests/{test_id}")).await;
+    assert!(test["locked_at"].is_null(), "тест не заблокирован");
+    assert_eq!(test["status"], "draft", "остался черновиком");
+    let (_, results) = owner.get(&format!("/api/tests/{test_id}/results")).await;
+    assert_eq!(results["rows"].as_array().map(Vec::len), Some(0), "в результатах пусто: {results}");
+}
+
+/// Методист как `CurrentUser` — для правки в своей транзакции.
+fn as_methodist(user_id: Uuid) -> CurrentUser {
+    CurrentUser {
+        id: user_id,
+        email: String::new(),
+        display_name: String::new(),
+        roles: Roles { superuser: false, methodist: true },
+        email_verified: true,
+        trusted_registration: false,
+        has_password: true,
+        session_id: Uuid::nil(),
+    }
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn edit_waiting_for_first_answer_sees_lock(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    // Транзакция первого ответа уже поставила locked_at, но ещё не завершилась.
+    let mut answer = state.db.begin().await.unwrap();
+    let _locked = sqlx::query("UPDATE tests SET locked_at = now() WHERE id = $1::uuid")
+        .bind(&room.test_id)
+        .execute(&mut *answer)
+        .await
+        .unwrap();
+    let questions = format!("/api/tests/{}/questions", room.test_id);
+    let edit = room.methodist.post(&questions, single(0));
+    let commit = async {
+        sleep(StdDuration::from_millis(300)).await;
+        answer.commit().await.unwrap();
+    };
+    let ((status, body), ()) = tokio::join!(edit, commit);
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "правка дождалась ответа и увидела блокировку: {body}"
+    );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn first_answer_waits_for_edit_in_progress(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let attempt = room.start().await;
+    let methodist_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM courses WHERE id = $1::uuid")
+        .bind(&room.course_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    let test_id: Uuid = room.test_id.parse().unwrap();
+    // Правка методиста держит строку теста (FOR UPDATE) и видит его незаблокированным.
+    let mut edit = state.db.begin().await.unwrap();
+    let test = lock_for_edit(&mut edit, &as_methodist(methodist_id), test_id).await.unwrap();
+    assert!(test.locked_at.is_none(), "правка начата до первого ответа");
+    let (path, body) = testing::answer_body(&attempt, 0, 0, 1);
+    let started = Instant::now();
+    let answer = room.student.put(&path, body);
+    let finish_edit = async {
+        sleep(StdDuration::from_millis(300)).await;
+        let _renamed = sqlx::query("UPDATE tests SET title = 'Правка до ответа' WHERE id = $1")
+            .bind(test_id)
+            .execute(&mut *edit)
+            .await
+            .unwrap();
+        edit.commit().await.unwrap();
+    };
+    let ((status, _), ()) = tokio::join!(answer, finish_edit);
+    assert_eq!(status, StatusCode::OK, "ответ сохранён после правки");
+    assert!(started.elapsed() >= StdDuration::from_millis(300), "ответ ждал конца правки");
+    let (title, locked): (String, bool) =
+        sqlx::query_as("SELECT title, locked_at IS NOT NULL FROM tests WHERE id = $1")
+            .bind(test_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!((title.as_str(), locked), ("Правка до ответа", true), "правка, затем блокировка");
 }
