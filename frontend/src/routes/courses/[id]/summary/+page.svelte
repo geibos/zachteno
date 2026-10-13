@@ -11,7 +11,6 @@
 		csvUrl,
 		nextSort,
 		sortSummaryRows,
-		type CourseSummaryTable,
 		type Mode,
 		type SortDir,
 		type SortKey,
@@ -29,25 +28,21 @@
 
 	const query = $derived({ stream_id: streamId || undefined, mode });
 
-	const summary = new Resource(async (): Promise<CourseSummaryTable> => {
-		const data = await unwrap(
-			api.GET('/api/courses/{course_id}/summary', { params: { path: { course_id: courseId }, query } })
-		);
-		// Баг бэкенда: в OpenAPI ответ описан схемой CourseSummary (элемент списка курсов) —
-		// коллизия имён в utoipa. Настоящая форма — CourseSummaryTable (reporting/tables.rs).
-		return data as unknown as CourseSummaryTable;
-	});
+	const summary = new Resource(() =>
+		unwrap(api.GET('/api/courses/{course_id}/summary', { params: { path: { course_id: courseId }, query } }))
+	);
 
 	const course = new Resource(() =>
 		unwrap(api.GET('/api/courses/{course_id}', { params: { path: { course_id: courseId } } }))
 	);
-	// Потоки курса: в списке потоков курсы перечислены названиями — сверяем с названием курса.
-	const allStreams = new Resource(() => unwrap(api.GET('/api/streams')));
+	const courseStreams = new Resource(() =>
+		unwrap(api.GET('/api/courses/{course_id}/streams', { params: { path: { course_id: courseId } } }))
+	);
 
 	$effect(() => {
 		void courseId;
 		void course.reload();
-		void allStreams.reload();
+		void courseStreams.reload();
 	});
 
 	$effect(() => {
@@ -56,13 +51,7 @@
 		void summary.reload();
 	});
 
-	const streams = $derived.by(() => {
-		const title = course.data?.title;
-		if (!title) return [];
-		return (allStreams.data ?? [])
-			.filter((stream) => stream.courses.includes(title))
-			.map((stream) => ({ id: stream.id, name: stream.name }));
-	});
+	const streams = $derived((courseStreams.data ?? []).map((stream) => ({ id: stream.stream_id, name: stream.name })));
 
 	const csvHref = $derived(csvUrl(`/api/courses/${courseId}/summary.csv`, { stream_id: streamId, mode }));
 

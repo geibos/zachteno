@@ -30,14 +30,17 @@
 	const stats = new Resource(() =>
 		unwrap(api.GET('/api/tests/{test_id}/stats', { params: { path: { test_id: testId }, query } }))
 	);
-	// Потоки, которым назначен тест, — из окон прохождения.
-	const windows = new Resource(() =>
-		unwrap(api.GET('/api/tests/{test_id}/windows', { params: { path: { test_id: testId } } }))
-	);
+	// Потоки для фильтра — потоки курса теста (GET /api/courses/{id}/streams).
+	const courseStreams = new Resource(async () => {
+		const test = await unwrap(api.GET('/api/tests/{test_id}', { params: { path: { test_id: testId } } }));
+		return unwrap(
+			api.GET('/api/courses/{course_id}/streams', { params: { path: { course_id: test.course_id } } })
+		);
+	});
 
 	$effect(() => {
 		void testId;
-		void windows.reload();
+		void courseStreams.reload();
 	});
 
 	$effect(() => {
@@ -53,7 +56,7 @@
 		if (tab === 'stats') void stats.reload();
 	});
 
-	const streams = $derived((windows.data ?? []).map((w) => ({ id: w.stream_id, name: w.stream_name })));
+	const streams = $derived((courseStreams.data ?? []).map((stream) => ({ id: stream.stream_id, name: stream.name })));
 	const csvHref = $derived(csvUrl(`/api/tests/${testId}/results.csv`, { stream_id: streamId, mode }));
 </script>
 

@@ -160,29 +160,10 @@ export function isNotableEvent(kind: string): boolean {
 
 // --- сводная таблица курса ---
 
-/**
- * Реальный ответ GET /api/courses/{id}/summary (backend reporting/tables.rs).
- * В OpenAPI он ошибочно описан схемой `CourseSummary` — коллизия имён в utoipa
- * с элементом списка курсов, поэтому тип описан здесь.
- */
-export interface SummaryCell {
-	test_id: string;
-	final_score: string | null;
-	max_score: string | null;
-	attempts: number;
-}
-
-export interface SummaryRow {
-	user_id: string;
-	display_name: string;
-	email: string;
-	cells: SummaryCell[];
-}
-
-export interface CourseSummaryTable {
-	tests: Array<{ test_id: string; title: string }>;
-	rows: SummaryRow[];
-}
+/** Ответ GET /api/courses/{id}/summary и его части (сгенерированные типы). */
+export type CourseSummaryTable = Schema<'CourseSummaryTable'>;
+export type SummaryRow = Schema<'SummaryRow'>;
+export type SummaryCell = Schema<'SummaryCell'>;
 
 /** Сортировка сводной: `student` или `t:<test_id>` (по итоговому баллу, «нет попыток» — в конце). */
 export function sortSummaryRows(rows: SummaryRow[], key: SortKey, dir: SortDir): SummaryRow[] {
