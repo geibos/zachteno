@@ -11,11 +11,15 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test": "vitest run",
-		"gen:api": "openapi-typescript src/lib/api/openapi.json -o src/lib/api/schema.d.ts"
+		"gen:api": "openapi-typescript src/lib/api/openapi.json -o src/lib/api/schema.d.ts",
+		"e2e": "playwright test",
+		"e2e:list": "playwright test --list",
+		"check:e2e": "tsc --noEmit -p e2e/tsconfig.json"
 	},
 	"devDependencies": {
 		"@internationalized/date": "^3.12.4",
 		"@lucide/svelte": "^1.56.0",
+		"@playwright/test": "^1.64.0",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.70.3",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
