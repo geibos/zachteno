@@ -23,6 +23,11 @@ services:
     build: { context: ./src, dockerfile: deploy/docker/app.Dockerfile }
     container_name: zachteno-app
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    # Argon2 (64 МиБ на хеш, параллельно по числу ядер) и перекодирование картинок.
+    mem_limit: ${APP_MEM_LIMIT:-2g}
+    pids_limit: 512
     # Только то, что нужно приложению: ни пароля суперпользователя Postgres, ни ключей бэкапов.
     ports:
       - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
@@ -64,6 +69,7 @@ services:
     build: { context: ./src, dockerfile: deploy/docker/postgres.Dockerfile }
     container_name: zachteno-postgres
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     environment:
       <<: *walg-env
       POSTGRES_USER: postgres
@@ -94,6 +100,7 @@ services:
     image: dxflrs/garage:v2.4.1
     container_name: zachteno-garage
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     environment: *garage-env
     volumes:
       - ./src/deploy/compose/garage.toml:/etc/garage.toml:ro
@@ -105,6 +112,7 @@ services:
     image: dxflrs/garage:v2.4.1
     container_name: zachteno-backup-garage
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     environment:
       GARAGE_RPC_SECRET: ${BACKUP_GARAGE_RPC_SECRET:?}
       GARAGE_ADMIN_TOKEN: ${BACKUP_GARAGE_ADMIN_TOKEN:?}
