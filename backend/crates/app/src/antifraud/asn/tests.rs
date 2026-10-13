@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::path::Path;
 
 use super::{AsnTable, timezone_mismatch};
 
@@ -27,4 +28,10 @@ fn timezone_mismatch_detects_foreign_zone_for_russian_ip() {
     assert!(timezone_mismatch("RU", Some("America/New_York")), "чужой пояс");
     assert!(timezone_mismatch("NL", Some("Europe/Moscow")), "российский пояс за VPN");
     assert!(!timezone_mismatch("RU", None), "пояс неизвестен");
+}
+
+#[test]
+fn missing_database_file_gives_empty_table() {
+    let table = AsnTable::load_if_present(Path::new("/nonexistent/ip2asn-v4.tsv")).unwrap();
+    assert_eq!(table.lookup("198.51.100.42".parse::<IpAddr>().unwrap()), None, "пустая таблица");
 }

@@ -1,7 +1,7 @@
 //! IP → ASN и страна по офлайн-базе iptoasn.com (PDDL), признак хостинга или VPN (design D14).
 
 use std::fs::File;
-use std::io::{BufRead as _, BufReader};
+use std::io::{BufRead as _, BufReader, Error as IoError, ErrorKind};
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 
@@ -70,6 +70,22 @@ impl AsnTable {
             .collect();
         ranges.sort_unstable_by_key(|range| range.start);
         Ok(Self { ranges })
+    }
+
+    /// Как [`Self::load`], но без файла — пустая таблица: на свежем стенде база
+    /// появляется только после первого запуска таймера обновления.
+    pub(crate) fn load_if_present(path: &Path) -> anyhow::Result<Self> {
+        match Self::load(path) {
+            Err(error)
+                if error
+                    .downcast_ref::<IoError>()
+                    .is_some_and(|io_error| io_error.kind() == ErrorKind::NotFound) =>
+            {
+                tracing::warn!(path = %path.display(), "базы IP → ASN нет, сетевые сигналы без ASN");
+                Ok(Self::default())
+            }
+            other => other,
+        }
     }
 
     /// Из строк (для тестов).

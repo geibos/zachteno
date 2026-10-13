@@ -67,12 +67,12 @@ impl AppState {
     }
 }
 
-/// Таблица IP → ASN из файла `ASN_DB_PATH`; без него — пустая.
+/// Таблица IP → ASN из файла `ASN_DB_PATH`; без переменной или файла — пустая.
 fn load_asn(config: &Config) -> anyhow::Result<AsnTable> {
     Ok(config
         .asn_db_path
         .as_deref()
-        .map(|path| AsnTable::load(Path::new(path)))
+        .map(|path| AsnTable::load_if_present(Path::new(path)))
         .transpose()?
         .unwrap_or_default())
 }
