@@ -4,6 +4,15 @@ set dotenv-load := true
 default:
     @just --list
 
+# Разработка: бэкенд и Vite с прокси /api; Ctrl+C останавливает оба
+dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill 0' EXIT
+    (cd backend && cargo run -q -p app -- serve) &
+    (cd frontend && npm run dev) &
+    wait
+
 # Миграции базы
 migrate:
     cd backend && cargo run -q -p app -- migrate
