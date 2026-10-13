@@ -22,8 +22,19 @@ interface Captured {
 	status: number;
 }
 
-async function withPage<T>(type: BrowserType, action: (page: Page) => Promise<T>): Promise<T> {
-	const browser = await type.launch();
+/**
+ * Отдельный браузер нужного движка. `headless` берётся из фикстуры теста: иначе
+ * `type.launch()` всегда headless и флаг `--headed` на эти браузеры не действует.
+ *
+ * Firefox откладывает `enumerateDevices()` до получения окном фокуса ОС, а окно, открытое
+ * Playwright в headed-режиме, его не получает — замеры устройства ждали бы вечно.
+ * Pref снимает только это ожидание; значения признаков он не меняет.
+ */
+async function withPage<T>(type: BrowserType, headless: boolean, action: (page: Page) => Promise<T>): Promise<T> {
+	const browser = await type.launch({
+		headless,
+		...(type.name() === 'firefox' ? { firefoxUserPrefs: { 'media.devices.unfocused.enabled': true } } : {})
+	});
 	try {
 		const context = await browser.newContext({ baseURL: BASE_URL, locale: 'ru-RU', timezoneId: 'Europe/Moscow' });
 		return await action(await context.newPage());
@@ -33,8 +44,8 @@ async function withPage<T>(type: BrowserType, action: (page: Page) => Promise<T>
 }
 
 /** Входит через форму и возвращает тело POST /api/signals (событие login) и статус ответа. */
-async function captureLoginSignal(type: BrowserType, email: string, password: string): Promise<Captured> {
-	return withPage(type, async (page) => {
+async function captureLoginSignal(type: BrowserType, headless: boolean, email: string, password: string): Promise<Captured> {
+	return withPage(type, headless, async (page) => {
 		const signal = nextSignal(page, 'login');
 		await loginViaForm(page, email, password);
 		return signal;
@@ -53,13 +64,13 @@ function compareDevices(left: SignalBody, right: SignalBody): string {
 	].join('\n');
 }
 
-test('9. смена браузера на одной машине: сравнение отпечатка устройства Chromium ↔ Firefox', async ({}, testInfo) => {
+test('9. смена браузера на одной машине: сравнение отпечатка устройства Chromium ↔ Firefox', async ({ headless }, testInfo) => {
 	test.skip(!firefoxInstalled(), FIREFOX_MISSING);
 	const user = await registerUser('switch', 'Студент Два Браузера');
 	await user.api.dispose();
 
-	const fromChromium = await captureLoginSignal(chromium, user.email, user.password);
-	const fromFirefox = await captureLoginSignal(firefox, user.email, user.password);
+	const fromChromium = await captureLoginSignal(chromium, headless, user.email, user.password);
+	const fromFirefox = await captureLoginSignal(firefox, headless, user.email, user.password);
 
 	// Сигнал входа из каждого браузера принят и сохранён (204).
 	expect(fromChromium.status).toBe(204);
@@ -81,16 +92,16 @@ interface CourseLinks {
 	links: Array<{ user_a: { id: string }; user_b: { id: string }; evidence: Array<{ kind: string; detail: string }> }>;
 }
 
-test('10. смена браузера: второй аккаунт из Firefox связан с первым по отпечатку устройства', async ({ admin }, testInfo) => {
+test('10. смена браузера: второй аккаунт из Firefox связан с первым по отпечатку устройства', async ({ admin, headless }, testInfo) => {
 	test.skip(!firefoxInstalled(), FIREFOX_MISSING);
 	const seeded = await seedTest(admin.api);
 	const first = await enrolledStudent(seeded, unique('Студент Хром'));
-	const fromChromium = await captureLoginSignal(chromium, first.email, first.password);
+	const fromChromium = await captureLoginSignal(chromium, headless, first.email, first.password);
 	expect(fromChromium.status).toBe(204);
 
 	// Второй аккаунт регистрируется по приглашению в другом браузере на том же компьютере.
 	const secondEmail = uniqueEmail('switch-second');
-	const fromFirefox = await withPage(firefox, async (page) => {
+	const fromFirefox = await withPage(firefox, headless, async (page) => {
 		const signal = nextSignal(page, 'register');
 		await page.goto(`/invite/${seeded.inviteToken}`);
 		await page.locator('#email').fill(secondEmail);
@@ -113,18 +124,20 @@ test('10. смена браузера: второй аккаунт из Firefox 
 	const secondId = stream.members.find((member) => member.email === secondEmail)?.user_id;
 	expect(secondId, 'второй аккаунт вступил в поток').toBeTruthy();
 	const pair = new Set([first.user.id, secondId]);
+	const findLink = async () => {
+		const { links } = await admin.api.call<CourseLinks>('GET', `/api/courses/${seeded.courseId}/antifraud`);
+		return links.find((item) => pair.has(item.user_a.id) && pair.has(item.user_b.id));
+	};
 
 	// Спека «Смена браузера на том же устройстве»: отпечаток устройства совпадает,
 	// поэтому связь аккаунтов есть и в её основаниях — общее устройство.
 	await expect
 		.poll(
-			async () => {
-				const { links } = await admin.api.call<CourseLinks>('GET', `/api/courses/${seeded.courseId}/antifraud`);
-				const link = links.find((item) => pair.has(item.user_a.id) && pair.has(item.user_b.id));
-				return (link?.evidence.map((evidence) => evidence.kind) ?? []).sort();
-			},
+			async () => ((await findLink())?.evidence.map((evidence) => evidence.kind) ?? []).sort(),
 			{ message: `основания связи Chromium ↔ Firefox должны включать общее устройство\n${report}`, timeout: 30_000 }
 		)
 		.toContainEqual(expect.stringMatching(/^(shared_(rare|common)_device|same_hardware)$/));
+	const evidence = (await findLink())?.evidence ?? [];
+	await testInfo.attach('link-evidence.json', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
 	await first.api.dispose();
 });

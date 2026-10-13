@@ -256,8 +256,12 @@ async function osInfo(): Promise<{ os: string; version: string }> {
 
 async function mediaCounts(): Promise<Record<string, number> | undefined> {
 	if (!navigator.mediaDevices?.enumerateDevices) return undefined;
-	// Без запроса разрешений: браузер отдаёт только типы (без имён).
-	const devices = await navigator.mediaDevices.enumerateDevices();
+	// Без запроса разрешений: браузер отдаёт только типы (без имён). Firefox не отвечает,
+	// пока окно не в фокусе, — без таймаута сигнал ждал бы фокуса и терялся при закрытии.
+	const devices = await Promise.race([
+		navigator.mediaDevices.enumerateDevices(),
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('media timeout')), 1000))
+	]);
 	const counts: Record<string, number> = { audioinput: 0, audiooutput: 0, videoinput: 0 };
 	for (const device of devices) counts[device.kind] = (counts[device.kind] ?? 0) + 1;
 	return counts;
