@@ -70,7 +70,7 @@ test.describe.serial('Методист готовит тест, студент �
 		await page.getByRole('tab', { name: 'Курсы' }).click();
 		await page.locator('#assign-course').click();
 		await page.getByRole('option', { name: shared.courseTitle }).click();
-		await page.getByRole('button', { name: 'Назначить' }).click();
+		await page.getByRole('button', { name: 'Назначить', exact: true }).click();
 		await expect(page.getByRole('link', { name: shared.courseTitle })).toBeVisible();
 
 		// Ссылка-приглашение: полный адрес показывается один раз
