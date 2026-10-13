@@ -2,17 +2,17 @@
 
 ## 1. Каркас репозитория и инфраструктура разработки
 
-- [ ] 1.1 Создать Cargo workspace `backend/` с крейтами `domain` (lib) и `app` (bin, clap: `serve`, `migrate`, `create-superuser`). Проверка: `cargo build --workspace` и `cargo run -p app -- --help` выводит подкоманды.
+- [x] 1.1 Создать Cargo workspace `backend/` с крейтами `domain` (lib) и `app` (bin, clap: `serve`, `migrate`, `create-superuser`). Проверка: `cargo build --workspace` и `cargo run -p app -- --help` выводит подкоманды.
 - [ ] 1.2 Создать SvelteKit-проект `frontend/`: TypeScript, Tailwind, shadcn-svelte, `adapter-static` с fallback `index.html`. Проверка: `npm run build` собирает `frontend/build/index.html`, `npm run check` проходит.
-- [ ] 1.3 Добавить `docker-compose.dev.yml` с PostgreSQL 17 и Garage (`dxflrs/garage:v2.4.1`, single-node, скрипт инициализации layout, ключа и бакета) и `.env.example` со всеми переменными (без значений секретов). Проверка: `docker compose -f docker-compose.dev.yml up -d` поднимает оба сервиса, `pg_isready` отвечает OK, `PUT` и `GET` объекта в бакет Garage проходят.
-- [ ] 1.4 Добавить `justfile` с рецептами `dev`, `test`, `lint`, `fmt`, `gen-api`, `ci`. Проверка: `just --list` показывает рецепты, `just ci` проходит на пустом каркасе.
-- [ ] 1.5 Подключить загрузку конфигурации из env, причём отсутствие перца или ключа HMAC роняет старт (spec `identity-auth`, «Нет перца»). Проверка: интеграционный тест запуска без `PASSWORD_PEPPERS` ожидает ошибку конфигурации.
+- [x] 1.3 Добавить `docker-compose.dev.yml` с PostgreSQL 17 и Garage (`dxflrs/garage:v2.4.1`, single-node, скрипт инициализации layout, ключа и бакета) и `.env.example` со всеми переменными (без значений секретов). Проверка: `docker compose -f docker-compose.dev.yml up -d` поднимает оба сервиса, `pg_isready` отвечает OK, `PUT` и `GET` объекта в бакет Garage проходят.
+- [x] 1.4 Добавить `justfile` с рецептами `dev`, `test`, `lint`, `fmt`, `gen-api`, `ci`. Проверка: `just --list` показывает рецепты, `just ci` проходит на пустом каркасе.
+- [x] 1.5 Подключить загрузку конфигурации из env, причём отсутствие перца или ключа HMAC роняет старт (spec `identity-auth`, «Нет перца»). Проверка: интеграционный тест запуска без `PASSWORD_PEPPERS` ожидает ошибку конфигурации.
 - [ ] 1.6 Подключить `tracing` (JSON, `request_id`), метрики Prometheus и `/health/live`, `/health/ready` с проверкой PG и S3. Проверка: тест, в котором при остановленной БД ready отдаёт 503, а live — 200.
-- [ ] 1.7 Настроить sqlx-миграции с отдельной ролью-владельцем и ролью приложения, применять их при `serve`. Проверка: `cargo run -p app -- migrate` на пустой БД отрабатывает, повторный запуск ничего не меняет.
+- [x] 1.7 Настроить sqlx-миграции с отдельной ролью-владельцем и ролью приложения, применять их при `serve`. Проверка: `cargo run -p app -- migrate` на пустой БД отрабатывает, повторный запуск ничего не меняет.
 - [ ] 1.8 Подключить `utoipa` для генерации OpenAPI и `openapi-typescript` с `openapi-fetch` на фронтенде, рецепт `just gen-api`. Проверка: после `just gen-api` команда `git diff --exit-code` на сгенерированных файлах проходит в CI.
-- [ ] 1.9 Встроить статику фронтенда в release-бинарь (`rust-embed`) с SPA-fallback, в dev — прокси на Vite. Проверка: release-бинарь отдаёт `index.html` по произвольному клиентскому маршруту и `/api/*` как API.
-- [ ] 1.10 Задать базовые заголовки безопасности: строгий CSP (`script-src 'self'`), `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, HSTS. Проверка: интеграционный тест проверяет заголовки ответа на `/`.
-- [ ] 1.11 Определять IP клиента: `X-Forwarded-For` учитывается только от доверенных прокси из конфига (по умолчанию `172.30.90.0/24`, сеть `proxy`), иначе берётся адрес соединения. Проверка: интеграционные тесты — заголовок от доверенного адреса учитывается, от недоверенного игнорируется.
+- [x] 1.9 Встроить статику фронтенда в release-бинарь (`rust-embed`) с SPA-fallback, в dev — прокси на Vite. Проверка: release-бинарь отдаёт `index.html` по произвольному клиентскому маршруту и `/api/*` как API.
+- [x] 1.10 Задать базовые заголовки безопасности: строгий CSP (`script-src 'self'`), `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, HSTS. Проверка: интеграционный тест проверяет заголовки ответа на `/`.
+- [x] 1.11 Определять IP клиента: `X-Forwarded-For` учитывается только от доверенных прокси из конфига (по умолчанию `172.30.90.0/24`, сеть `proxy`), иначе берётся адрес соединения. Проверка: интеграционные тесты — заголовок от доверенного адреса учитывается, от недоверенного игнорируется.
 
 ## 2. Доменная логика (`domain`)
 

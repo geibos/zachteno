@@ -1,0 +1,33 @@
+# Локальное окружение разработки: PostgreSQL и Garage. Приложение — `just dev`.
+name: zachteno-dev
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: dev-postgres
+      POSTGRES_DB: postgres
+      ZACHTENO_OWNER_PASSWORD: dev-owner
+      ZACHTENO_APP_PASSWORD: dev-app
+    ports: ["127.0.0.1:55432:5432"]
+    volumes:
+      - ./deploy/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      retries: 30
+  garage:
+    image: dxflrs/garage:v2.4.1
+    environment:
+      GARAGE_RPC_SECRET: 2862a1f938a1bba3951b5094d67de0e81a4ef7c707dbcf01c7b6a5775c194f13
+      GARAGE_ADMIN_TOKEN: dev-admin-token
+    ports: ["127.0.0.1:3900:3900"]
+    volumes:
+      - ./deploy/garage/garage.toml:/etc/garage.toml:ro
+      - garage-meta:/var/lib/garage/meta
+      - garage-data:/var/lib/garage/data
+volumes:
+  pgdata:
+  garage-meta:
+  garage-data:

@@ -1,0 +1,485 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Зачтено API",
+    "description": "Сервис тестирования студентов",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Вход по email и паролю.",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUser"
+                }
+              }
+            }
+          },
+          "401": {},
+          "429": {}
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Выход: удаляет сессию на сервере и cookie в браузере.",
+        "operationId": "logout",
+        "responses": {
+          "204": {}
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Текущий пользователь (или `null`).",
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/password/forgot": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Запрос восстановления: ответ одинаковый, есть такой email или нет.",
+        "operationId": "forgot_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {}
+        }
+      }
+    },
+    "/api/auth/password/reset": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Задаёт пароль по ссылке восстановления (или из CLI) и завершает все сессии.",
+        "operationId": "reset_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "400": {},
+          "410": {}
+        }
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Регистрирует пользователя, открывает сессию и отправляет письмо подтверждения.",
+        "operationId": "register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUser"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "email занят"
+          }
+        }
+      }
+    },
+    "/api/auth/verify-email": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Подтверждает email по ссылке из письма.",
+        "operationId": "verify_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "400": {},
+          "410": {
+            "description": "ссылка устарела"
+          }
+        }
+      }
+    },
+    "/api/auth/verify-email/resend": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Отправляет письмо подтверждения ещё раз.",
+        "operationId": "resend_verification",
+        "responses": {
+          "202": {}
+        }
+      }
+    },
+    "/api/profile/password": {
+      "post": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Меняет пароль и завершает остальные сессии.",
+        "operationId": "change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "400": {},
+          "401": {}
+        }
+      }
+    },
+    "/api/profile/sessions": {
+      "get": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Список моих активных сессий.",
+        "operationId": "list_sessions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SessionInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/profile/sessions/{session_id}": {
+      "delete": {
+        "tags": [
+          "profile"
+        ],
+        "summary": "Завершает одну из моих сессий.",
+        "operationId": "revoke_session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChangePasswordRequest": {
+        "type": "object",
+        "description": "Смена или первое задание пароля.",
+        "required": [
+          "new_password"
+        ],
+        "properties": {
+          "current_password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Текущий пароль; не нужен, если пароля ещё нет."
+          },
+          "new_password": {
+            "type": "string"
+          }
+        }
+      },
+      "CurrentUser": {
+        "type": "object",
+        "description": "Вошедший пользователь.",
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "roles",
+          "email_verified",
+          "trusted_registration",
+          "has_password"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "email_verified": {
+            "type": "boolean"
+          },
+          "has_password": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "roles": {
+            "$ref": "#/components/schemas/Roles"
+          },
+          "trusted_registration": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ForgotRequest": {
+        "type": "object",
+        "description": "Email для восстановления пароля.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "description": "Данные входа.",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "MeResponse": {
+        "type": "object",
+        "description": "Кто я и что доступно на этом стенде.",
+        "required": [
+          "yandex_enabled"
+        ],
+        "properties": {
+          "user": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CurrentUser"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "yandex_enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "description": "Данные регистрации.",
+        "required": [
+          "email",
+          "display_name",
+          "password"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "trusted_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Токен ссылки доверенной регистрации, если пришли по ней."
+          }
+        }
+      },
+      "ResetRequest": {
+        "type": "object",
+        "description": "Новый пароль по ссылке.",
+        "required": [
+          "token",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      },
+      "Roles": {
+        "type": "object",
+        "description": "Глобальные роли пользователя.",
+        "required": [
+          "superuser",
+          "methodist"
+        ],
+        "properties": {
+          "methodist": {
+            "type": "boolean"
+          },
+          "superuser": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SessionInfo": {
+        "type": "object",
+        "description": "Активная сессия.",
+        "required": [
+          "id",
+          "created_at",
+          "last_seen_at",
+          "current"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "current": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "ip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "TokenRequest": {
+        "type": "object",
+        "description": "Токен из ссылки.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
