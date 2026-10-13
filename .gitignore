@@ -1,0 +1,17 @@
+# секреты
+.env
+.env.*
+!.env.example
+# сборки и зависимости
+/backend/target/
+node_modules/
+/frontend/build/
+/frontend/.svelte-kit/
+# локальные данные
+/data/
+/.pdd/
+playwright-report/
+test-results/
+# служебное
+.claude/*.local.md
+.DS_Store
