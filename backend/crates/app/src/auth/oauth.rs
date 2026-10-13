@@ -49,8 +49,15 @@ pub(crate) struct StartQuery {
 
 /// Только относительный путь этого сайта: защита от открытого редиректа.
 pub(crate) fn safe_next(next: Option<&str>) -> String {
-    next.filter(|path| path.starts_with('/') && !path.starts_with("//") && !path.contains('\\'))
-        .map_or_else(|| "/".to_owned(), str::to_owned)
+    let allowed = |byte: u8| byte.is_ascii_alphanumeric() || b"/-._~?=&%#".contains(&byte);
+    next.filter(|path| {
+        let bytes = path.as_bytes();
+        bytes.first() == Some(&b'/')
+            && !matches!(bytes.get(1), Some(b'/' | b'\\'))
+            && path.len() <= 512
+            && bytes.iter().all(|byte| allowed(*byte))
+    })
+    .map_or_else(|| "/".to_owned(), str::to_owned)
 }
 
 fn client(state: &AppState) -> ApiResult<&OAuthClient> {

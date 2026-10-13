@@ -36,6 +36,15 @@ enum Command {
         #[arg(long, default_value = "Администратор")]
         name: String,
     },
+    /// Загрузить демонстрационный курс ПДД из каталога `etspring/pdd_russia`.
+    SeedPdd {
+        /// Каталог с клоном набора.
+        #[arg(long)]
+        dir: std::path::PathBuf,
+        /// Email владельца курса (методист или суперпользователь).
+        #[arg(long)]
+        owner: String,
+    },
 }
 
 pub(crate) async fn run() -> anyhow::Result<()> {
@@ -50,6 +59,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         Command::Migrate => database::migrate(&config).await,
         Command::Openapi => print_openapi(),
         Command::CreateSuperuser { email, name } => create_superuser(config, &email, &name).await,
+        Command::SeedPdd { dir, owner } => seed_pdd(config, &dir, &owner).await,
     }
 }
 
@@ -71,6 +81,22 @@ async fn create_superuser(config: Config, email: &str, name: &str) -> anyhow::Re
     match link {
         Some(url) => writeln!(stdout, "Задайте пароль по ссылке (действует 24 часа):\n{url}")?,
         None => writeln!(stdout, "У учётной записи уже есть пароль — роль выдана.")?,
+    }
+    Ok(())
+}
+
+async fn seed_pdd(config: Config, dir: &std::path::Path, owner: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    database::migrate(&config).await?;
+    let db = database::connect(&config).await?;
+    let state = AppState::new(config, db)?;
+    let owner_row = crate::auth::account::find_for_login(&state.db, owner).await?.with_context(|| format!("нет пользователя {owner}"))?;
+    let seeded = crate::seed::seed_pdd(&state, dir, owner_row.id).await?;
+    let mut stdout = std::io::stdout().lock();
+    if seeded.created {
+        writeln!(stdout, "Курс создан: {} вопросов, {} картинок, id {}", seeded.questions, seeded.images, seeded.course_id)?;
+    } else {
+        writeln!(stdout, "Курс уже есть (id {}, {} вопросов) — ничего не делаю", seeded.course_id, seeded.questions)?;
     }
     Ok(())
 }

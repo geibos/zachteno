@@ -140,3 +140,16 @@ async fn raw_component_values_are_not_stored(db: PgPool) {
     let dump: String = sqlx::query_scalar("SELECT row_to_json(s)::text FROM signals s").fetch_one(&state.db).await.unwrap();
     assert!(!dump.contains("RTX") && !dump.contains("very-unique-marker"), "только хеши: {dump}");
 }
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn teacher_cannot_decide_on_strangers_links(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let (mut first, first_id) = testing::register(&state, "x@example.com").await;
+    let (mut second, second_id) = testing::register(&state, "y@example.com").await;
+    signal(&mut first, "m", device("g")).await;
+    signal(&mut second, "m", device("g")).await;
+    let _level = level(&state, first_id, second_id).await;
+    let decision = json!({ "course_id": room.course_id, "user_a": first_id, "user_b": second_id, "decision": "rejected" });
+    assert_eq!(room.methodist.post("/api/antifraud/decisions", decision).await.0, StatusCode::NOT_FOUND, "связь не из этого курса");
+}

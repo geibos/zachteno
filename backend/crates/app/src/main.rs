@@ -19,6 +19,7 @@ mod mail;
 mod ops;
 mod reporting;
 mod secret;
+mod seed;
 mod state;
 mod streams;
 mod sweeper;

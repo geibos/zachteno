@@ -66,11 +66,21 @@ struct LinkRow {
     computed_at: OffsetDateTime,
 }
 
+const PARTICIPANTS: &str = "participants AS (
+        SELECT m.user_id FROM stream_courses sc JOIN stream_members m ON m.stream_id = sc.stream_id WHERE sc.course_id = $1
+        UNION SELECT a.user_id FROM attempts a JOIN tests t ON t.id = a.test_id WHERE t.course_id = $1 AND NOT a.is_preview)";
+
+/// Данные пользователя вне курса не раскрываются: только факт связи.
 const COURSE_LINKS: &str = "
     WITH participants AS (
         SELECT m.user_id FROM stream_courses sc JOIN stream_members m ON m.stream_id = sc.stream_id WHERE sc.course_id = $1
         UNION SELECT a.user_id FROM attempts a JOIN tests t ON t.id = a.test_id WHERE t.course_id = $1 AND NOT a.is_preview)
-    SELECT l.user_a, ua.display_name AS a_name, ua.email AS a_email, l.user_b, ub.display_name AS b_name, ub.email AS b_email,
+    SELECT l.user_a,
+           CASE WHEN l.user_a IN (SELECT user_id FROM participants) THEN ua.display_name ELSE 'Пользователь вне курса' END AS a_name,
+           CASE WHEN l.user_a IN (SELECT user_id FROM participants) THEN ua.email ELSE '' END AS a_email,
+           l.user_b,
+           CASE WHEN l.user_b IN (SELECT user_id FROM participants) THEN ub.display_name ELSE 'Пользователь вне курса' END AS b_name,
+           CASE WHEN l.user_b IN (SELECT user_id FROM participants) THEN ub.email ELSE '' END AS b_email,
            l.level, l.evidence, l.decision, l.comment, l.decided_at, l.computed_at
     FROM identity_links l JOIN users ua ON ua.id = l.user_a JOIN users ub ON ub.id = l.user_b
     WHERE l.user_a IN (SELECT user_id FROM participants) OR l.user_b IN (SELECT user_id FROM participants)
@@ -155,9 +165,14 @@ pub(crate) async fn decide(
     }
     let (user_a, user_b) = if request.user_a < request.user_b { (request.user_a, request.user_b) } else { (request.user_b, request.user_a) };
     let mut tx = state.db.begin().await?;
-    let updated = sqlx::query(
-        "UPDATE identity_links SET decision = $3, comment = $4, decided_by = $5, decided_at = $6 WHERE user_a = $1 AND user_b = $2",
-    )
+    let statement = format!(
+        "WITH {PARTICIPANTS}
+         UPDATE identity_links SET decision = $4, comment = $5, decided_by = $6, decided_at = $7
+         WHERE user_a = $2 AND user_b = $3
+           AND (user_a IN (SELECT user_id FROM participants) OR user_b IN (SELECT user_id FROM participants))"
+    );
+    let updated = sqlx::query(sqlx::AssertSqlSafe(statement))
+    .bind(request.course_id)
     .bind(user_a)
     .bind(user_b)
     .bind(&request.decision)

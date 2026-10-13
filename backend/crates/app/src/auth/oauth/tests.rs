@@ -104,3 +104,12 @@ async fn yandex_registration_by_trusted_link_and_invite(db: PgPool) {
     let (_, stream) = room.methodist.get(&format!("/api/streams/{}", room.stream_id)).await;
     assert_eq!(stream["members"].as_array().map(Vec::len), Some(2), "сразу в потоке");
 }
+
+#[test]
+fn next_path_rejects_open_redirect_tricks() {
+    use super::safe_next;
+    for evil in ["//evil.com", "/\\evil.com", "/\t/evil.com", "/\n/evil.com", "https://evil.com", "evil", "/ /evil"] {
+        assert_eq!(safe_next(Some(evil)), "/", "отклонено: {evil:?}");
+    }
+    assert_eq!(safe_next(Some("/invite/abc?autojoin=1")), "/invite/abc?autojoin=1", "свой путь");
+}
