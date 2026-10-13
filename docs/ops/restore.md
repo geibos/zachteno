@@ -18,6 +18,8 @@ docker compose logs -f postgres        # дождаться "database system is 
 docker compose up -d app
 ```
 
+Отрепетировать восстановление, не трогая рабочую базу: `src/deploy/compose/backup/pitr-drill.sh` (или `just pitr-drill` из `src/`). Скрипт ставит в рабочей базе две служебные метки, между ними фиксирует момент T, восстанавливает копию на T во временный контейнер и проверяет, что первая метка есть, а второй нет; метки затем удаляются.
+
 Если нужен не последний base backup, а более ранний: `docker compose exec -u postgres postgres wal-g backup-list` и подставить имя в `restore-pitr.sh` вместо `LATEST`.
 
 ## Восстановить картинки
