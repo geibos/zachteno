@@ -501,3 +501,72 @@ async fn student_in_stream_without_course_sees_stream_name(db: PgPool) {
     assert_eq!(dashboard["streams"], json!(["Пустой"]), "{dashboard}");
     assert_eq!(dashboard["closed"].as_array().map(Vec::len), Some(0), "тестов нет");
 }
+
+/// Строка выдачи поиска по email.
+fn candidate<'body>(body: &'body Json, email: &str) -> Option<&'body Json> {
+    body["users"].as_array()?.iter().find(|user| user["email"] == email)
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn manager_searches_registered_users_with_membership(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let (_ivan, ivan_id) = testing::register(&state, "ivan@example.com").await;
+    let (_blocked, blocked_id) = testing::register(&state, "blocked@example.com").await;
+    for (sql, id) in [
+        ("UPDATE users SET display_name = 'Иван Петров' WHERE id = $1", ivan_id),
+        ("UPDATE users SET blocked_at = now() WHERE id = $1", blocked_id),
+    ] {
+        let _done = sqlx::query(sql).bind(id).execute(&state.db).await.unwrap();
+    }
+    let member = format!("/api/streams/{}/members/{}", room.stream_id, room.student_id);
+    assert_eq!(room.methodist.delete(&member).await.0, StatusCode::NO_CONTENT, "исключён");
+    let search = format!("/api/streams/{}/candidates", room.stream_id);
+
+    let (status, by_name) =
+        room.methodist.get(&format!("{search}?search=%D0%BF%D0%B5%D1%82%D1%80%D0%BE%D0%B2")).await;
+    assert_eq!(status, StatusCode::OK, "{by_name}");
+    assert_eq!(
+        by_name["users"].as_array().map(Vec::len),
+        Some(1),
+        "по имени без учёта регистра: {by_name}"
+    );
+    assert_eq!(candidate(&by_name, "ivan@example.com").unwrap()["membership"], "none");
+
+    let (_, by_email) = room.methodist.get(&format!("{search}?search=EXAMPLE.COM")).await;
+    assert_eq!(candidate(&by_email, "student@example.com").unwrap()["membership"], "removed");
+    assert!(
+        candidate(&by_email, "blocked@example.com").is_none(),
+        "заблокированных нет: {by_email}"
+    );
+    assert_eq!(by_email["more"], false);
+
+    let (_, wildcard) = room.methodist.get(&format!("{search}?search=%25")).await;
+    assert_eq!(
+        wildcard["users"].as_array().map(Vec::len),
+        Some(0),
+        "% — обычный символ: {wildcard}"
+    );
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn candidate_search_is_limited_and_private(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let _bulk = sqlx::query(
+        "INSERT INTO users (email, display_name) SELECT 'bulk' || n || '@example.com', 'Bulk ' || n FROM generate_series(1, 51) n",
+    )
+    .execute(&state.db)
+    .await
+    .unwrap();
+    let search = format!("/api/streams/{}/candidates", room.stream_id);
+    let (_, page) = room.methodist.get(&format!("{search}?search=bulk")).await;
+    assert_eq!(page["users"].as_array().map(Vec::len), Some(50), "не больше 50");
+    assert_eq!(page["more"], true, "есть ещё");
+    let (mut stranger, _id) = testing::register(&state, "stranger@example.com").await;
+    assert_eq!(
+        stranger.get(&format!("{search}?search=bulk")).await.0,
+        StatusCode::NOT_FOUND,
+        "посторонний"
+    );
+}

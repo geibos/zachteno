@@ -81,7 +81,7 @@
 {/snippet}
 
 <div class="grid gap-6">
-	<AddMembersForm {streamId} {onchange} />
+	<AddMembersForm {streamId} {members} {onchange} />
 
 	{#if active.length === 0}
 		<EmptyState
@@ -90,6 +90,7 @@
 			text="Добавьте зарегистрированных студентов по email или отправьте пригласительную ссылку с вкладки «Ссылки»."
 		/>
 	{:else}
+		<h2 class="-mb-3 text-sm font-medium">Участники потока ({active.length})</h2>
 		<ul class="bg-card divide-y rounded-xl border">
 			{#each active as member (member.user_id)}
 				{@render memberRow(member, false)}

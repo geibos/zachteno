@@ -10,11 +10,17 @@
 	import { api, errorMessage, unwrap, type Schema } from '$lib/api/client';
 	import { count } from '$lib/format';
 	import { parseEmailList } from './email-list';
+	import StudentSearch from './StudentSearch.svelte';
 
 	type Outcome = Schema<'AddOutcome'>;
 	type Status = Schema<'AddStatus'>;
+	type Member = Schema<'Member'>;
 
-	let { streamId, onchange }: { streamId: string; onchange: () => void } = $props();
+	let {
+		streamId,
+		members,
+		onchange
+	}: { streamId: string; members: Member[]; onchange: () => void } = $props();
 
 	let text = $state('');
 	let saving = $state(false);
@@ -66,12 +72,19 @@
 	<Card.Header>
 		<Card.Title class="flex items-center gap-2 text-base"><UserPlusIcon class="size-4" />Добавить студентов</Card.Title>
 		<Card.Description>
-			Только тех, кто уже зарегистрирован. Вставьте адреса столбцом или через запятую — например, из таблицы
-			деканата. Незарегистрированным отправьте пригласительную ссылку.
+			Найдите студента среди зарегистрированных и нажмите «Добавить». Незарегистрированным отправьте
+			пригласительную ссылку.
 		</Card.Description>
 	</Card.Header>
-	<Card.Content>
-		<form class="grid gap-3" onsubmit={submit}>
+	<Card.Content class="grid gap-4">
+		<StudentSearch {streamId} {members} {onchange} />
+
+		<details class="group rounded-lg border px-3 py-2">
+			<summary class="cursor-pointer text-sm font-medium">Вставить список email</summary>
+			<p class="text-muted-foreground mt-2 text-sm">
+				Адреса столбцом или через запятую — например, из таблицы деканата.
+			</p>
+		<form class="mt-3 grid gap-3" onsubmit={submit}>
 			<Label for="add-members" class="sr-only">Email студентов</Label>
 			<Textarea
 				id="add-members"
@@ -119,5 +132,6 @@
 				{/each}
 			</ul>
 		{/if}
+		</details>
 	</Card.Content>
 </Card.Root>

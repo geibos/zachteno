@@ -837,6 +837,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/streams/{stream_id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ищет зарегистрированных пользователей для добавления в поток: по подстроке имени или email. */
+        get: operations["search_candidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/streams/{stream_id}/courses": {
         parameters: {
             query?: never;
@@ -1294,6 +1311,21 @@ export interface components {
         BlockChange: {
             blocked: boolean;
         };
+        /** @description Зарегистрированный пользователь в выдаче поиска. */
+        Candidate: {
+            display_name: string;
+            email: string;
+            email_verified: boolean;
+            membership: components["schemas"]["Membership"];
+            /** Format: uuid */
+            user_id: string;
+        };
+        /** @description Выдача поиска: не больше [`MAX_CANDIDATES`] строк. */
+        Candidates: {
+            /** @description Нашлось больше, чем показано: стоит уточнить запрос. */
+            more: boolean;
+            users: components["schemas"]["Candidate"][];
+        };
         /** @description Ячейка вопроса. */
         Cell: {
             free_text: boolean;
@@ -1601,6 +1633,11 @@ export interface components {
             /** Format: uuid */
             user_id: string;
         };
+        /**
+         * @description Отношение пользователя к потоку.
+         * @enum {string}
+         */
+        Membership: "none" | "member" | "removed";
         /** @description Переход к вопросу. */
         NavigateInput: {
             to_index: number;
@@ -3413,6 +3450,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["StreamDetail"];
                 };
+            };
+        };
+    };
+    search_candidates: {
+        parameters: {
+            query?: {
+                /** @description Подстрока имени или email; пусто — первые по алфавиту. */
+                search?: string;
+            };
+            header?: never;
+            path: {
+                stream_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Candidates"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

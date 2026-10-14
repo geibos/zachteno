@@ -1680,6 +1680,47 @@
         }
       }
     },
+    "/api/streams/{stream_id}/candidates": {
+      "get": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Ищет зарегистрированных пользователей для добавления в поток: по подстроке имени или email.",
+        "operationId": "search_candidates",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Подстрока имени или email; пусто — первые по алфавиту.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Candidates"
+                }
+              }
+            }
+          },
+          "404": {}
+        }
+      }
+    },
     "/api/streams/{stream_id}/courses": {
       "post": {
         "tags": [
@@ -2846,6 +2887,55 @@
           }
         }
       },
+      "Candidate": {
+        "type": "object",
+        "description": "Зарегистрированный пользователь в выдаче поиска.",
+        "required": [
+          "user_id",
+          "email",
+          "display_name",
+          "email_verified",
+          "membership"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "email_verified": {
+            "type": "boolean"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/Membership"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "Candidates": {
+        "type": "object",
+        "description": "Выдача поиска: не больше [`MAX_CANDIDATES`] строк.",
+        "required": [
+          "users",
+          "more"
+        ],
+        "properties": {
+          "more": {
+            "type": "boolean",
+            "description": "Нашлось больше, чем показано: стоит уточнить запрос."
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            }
+          }
+        }
+      },
       "Cell": {
         "type": "object",
         "description": "Ячейка вопроса.",
@@ -3823,6 +3913,15 @@
             "format": "uuid"
           }
         }
+      },
+      "Membership": {
+        "type": "string",
+        "description": "Отношение пользователя к потоку.",
+        "enum": [
+          "none",
+          "member",
+          "removed"
+        ]
       },
       "NavigateInput": {
         "type": "object",

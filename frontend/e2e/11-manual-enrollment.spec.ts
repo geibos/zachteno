@@ -15,12 +15,23 @@ test('23. ручное добавление в поток, закрытый те
 	const staffPage = await staff.newPage();
 	await signIn(staff, staffPage, admin);
 	await staffPage.goto(`/streams/${stream.streamId}`);
+
+	// Поиск среди зарегистрированных и кнопка «Добавить» в строке.
+	await staffPage.getByLabel('Поиск среди зарегистрированных').fill(student.email);
+	const found = staffPage.getByRole('list', { name: 'Найденные пользователи' }).getByRole('listitem');
+	await expect(found).toHaveCount(1);
+	await expect(found).toContainText('email не подтверждён');
+	await found.getByRole('button', { name: 'Добавить' }).click();
+	await expect(found).toContainText('в потоке');
+	await expect(staffPage.getByText(student.email, { exact: true }).last()).toBeVisible();
+
+	// Запасной путь — список email: незнакомый адрес попадает в отчёт.
+	await staffPage.getByText('Вставить список email').click();
 	await staffPage.getByLabel('Email студентов').fill(`${student.email.toUpperCase()}\n${ghost}`);
-	await staffPage.getByRole('button', { name: 'Добавить', exact: true }).click();
+	await staffPage.getByRole('button', { name: 'Добавить', exact: true }).last().click();
 	const report = staffPage.getByRole('list', { name: 'Итоги добавления' });
-	await expect(report.getByRole('listitem').filter({ hasText: student.email })).toContainText('добавлен(а)');
+	await expect(report.getByRole('listitem').filter({ hasText: student.email })).toContainText('уже в потоке');
 	await expect(report.getByRole('listitem').filter({ hasText: ghost })).toContainText('не зарегистрирован(а)');
-	await expect(report).toContainText('email не подтверждён');
 	await expect(staffPage.getByLabel('Email студентов')).toHaveValue(ghost);
 
 	// Окно не открыто: студент видит тест в «Пока закрыты», начать не может.

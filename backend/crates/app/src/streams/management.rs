@@ -4,10 +4,10 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgConnection};
+use sqlx::{FromRow, PgConnection, Type};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -304,7 +304,7 @@ pub(crate) struct AddReport {
 }
 
 #[derive(FromRow)]
-struct Candidate {
+struct Found {
     id: Uuid,
     display_name: String,
     email_verified: bool,
@@ -431,7 +431,7 @@ async fn find_candidate(
     tx: &mut PgConnection,
     stream_id: Uuid,
     email: &str,
-) -> ApiResult<Option<Candidate>> {
+) -> ApiResult<Option<Found>> {
     Ok(sqlx::query_as(
         "SELECT u.id, u.display_name, u.email_verified_at IS NOT NULL AS email_verified,
                 (SELECT m.removed_at IS NOT NULL FROM stream_members m WHERE m.stream_id = $2 AND m.user_id = u.id) AS removed
@@ -453,7 +453,7 @@ const ADD_MEMBER: &str =
 async fn enroll(
     tx: &mut PgConnection,
     stream_id: Uuid,
-    found: &Candidate,
+    found: &Found,
     now: OffsetDateTime,
 ) -> ApiResult<AddStatus> {
     let (change, status) = match found.removed {
@@ -467,6 +467,81 @@ async fn enroll(
     };
     let _changed = change.execute(&mut *tx).await?;
     Ok(status)
+}
+
+/// Параметры поиска кандидатов.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct CandidateQuery {
+    /// Подстрока имени или email; пусто — первые по алфавиту.
+    pub search: Option<String>,
+}
+
+/// Отношение пользователя к потоку.
+#[derive(Debug, Clone, Copy, Serialize, Type, ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+pub(crate) enum Membership {
+    /// Не состоит в потоке.
+    #[serde(rename = "none")]
+    #[sqlx(rename = "none")]
+    Outside,
+    Member,
+    Removed,
+}
+
+/// Зарегистрированный пользователь в выдаче поиска.
+#[derive(Debug, Serialize, FromRow, ToSchema)]
+pub(crate) struct Candidate {
+    pub user_id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    pub email_verified: bool,
+    pub membership: Membership,
+}
+
+/// Выдача поиска: не больше [`MAX_CANDIDATES`] строк.
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct Candidates {
+    pub users: Vec<Candidate>,
+    /// Нашлось больше, чем показано: стоит уточнить запрос.
+    pub more: bool,
+}
+
+const MAX_CANDIDATES: usize = 50;
+
+const SEARCH_CANDIDATES: &str = "SELECT u.id AS user_id, u.email, u.display_name, u.email_verified_at IS NOT NULL AS email_verified,
+            CASE WHEN m.user_id IS NULL THEN 'none' WHEN m.removed_at IS NULL THEN 'member' ELSE 'removed' END AS membership
+     FROM users u LEFT JOIN stream_members m ON m.user_id = u.id AND m.stream_id = $1
+     WHERE u.blocked_at IS NULL
+       AND (u.display_name ILIKE '%' || $2 || '%' ESCAPE '\\' OR u.email ILIKE '%' || $2 || '%' ESCAPE '\\')
+     ORDER BY u.display_name, u.email LIMIT $3";
+
+/// Ищет зарегистрированных пользователей для добавления в поток: по подстроке имени или email.
+#[utoipa::path(get, path = "/api/streams/{stream_id}/candidates", tag = "streams",
+    params(("stream_id" = Uuid, Path), CandidateQuery), responses((status = 200, body = Candidates), (status = 404)))]
+pub(crate) async fn search_candidates(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(stream_id): Path<Uuid>,
+    Query(query): Query<CandidateQuery>,
+) -> ApiResult<Json<Candidates>> {
+    require_manager(&state.db, &user, stream_id).await?;
+    let pattern = like_escape(query.search.as_deref().unwrap_or_default().trim());
+    let mut users: Vec<Candidate> = sqlx::query_as(SEARCH_CANDIDATES)
+        .bind(stream_id)
+        .bind(pattern)
+        .bind(i64::try_from(MAX_CANDIDATES + 1).unwrap_or(i64::MAX))
+        .fetch_all(&state.db)
+        .await?;
+    let more = users.len() > MAX_CANDIDATES;
+    users.truncate(MAX_CANDIDATES);
+    Ok(Json(Candidates { users, more }))
+}
+
+/// Экранирует `\`, `%` и `_`, чтобы ввод искался как обычный текст.
+fn like_escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 /// Поток курса для фильтров.
