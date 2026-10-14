@@ -53,7 +53,7 @@ api-check: gen-api
 
 # Полный набор проверок перед коммитом
 ci: lint test web-check api-check
-    openspec validate add-student-testing-platform --strict
+    openspec validate --all --strict
 
 # Восстановление на момент времени (останавливает приложение): just restore-pitr '2026-10-13 14:04:00+03'
 restore-pitr target:

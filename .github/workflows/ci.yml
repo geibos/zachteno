@@ -75,4 +75,4 @@ jobs:
           git diff --exit-code -- frontend/src/lib/api/openapi.json frontend/src/lib/api/schema.d.ts
 
       - name: OpenSpec
-        run: npx --yes @fission-ai/openspec@1.13.1 validate add-student-testing-platform --strict
+        run: npx --yes @fission-ai/openspec@1.13.1 validate --all --strict
