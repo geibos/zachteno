@@ -12,7 +12,7 @@
 ![SvelteKit](https://img.shields.io/badge/SvelteKit-Svelte%205-ff3e00?logo=svelte&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791?logo=postgresql&logoColor=white)
 
-[Открыть стенд](https://zachteno.sobieg.ru) · [Требования и решения](openspec/changes/add-student-testing-platform/) · [Развёртывание](deploy/compose/README.md)
+[Открыть стенд](https://zachteno.sobieg.ru) · [Требования и решения](openspec/specs/) · [Развёртывание](deploy/compose/README.md)
 
 <br>
 
@@ -156,7 +156,7 @@ cargo run -p app -- seed-pdd --dir ~/pdd_russia --owner you@example.org
 
 ## Документация
 
-- [Требования, дизайн и задачи](openspec/changes/add-student-testing-platform/) — OpenSpec-изменение, по которому написан сервис.
+- [Требования](openspec/specs/) — действующие спецификации OpenSpec по областям; [дизайн и задачи](openspec/changes/archive/2026-10-14-add-student-testing-platform/) — изменение, по которому написан сервис.
 - [Развёртывание через Docker Compose](deploy/compose/README.md) — production-конфигурация, бэкапы, таймеры systemd.
 - [Восстановление из бэкапа](docs/ops/restore.md) — в том числе на момент времени и учебное восстановление.
 - [Security-ревью](docs/security/review-2026-10.md) — найденное, исправленное и принятые риски.
