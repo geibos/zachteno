@@ -37,9 +37,9 @@
 
 <table>
   <tr>
-    <td align="center"><img src="docs/images/phone-dashboard.webp" width="250" alt="Панель студента на телефоне"><br><sub>Мои тесты</sub></td>
-    <td align="center"><img src="docs/images/phone-runner.webp" width="250" alt="Вопрос с картинкой на телефоне"><br><sub>Прохождение</sub></td>
-    <td align="center"><img src="docs/images/phone-review.webp" width="250" alt="Разбор попытки на телефоне"><br><sub>Разбор попытки</sub></td>
+    <td align="center" valign="top"><img src="docs/images/phone-dashboard.webp" width="250" alt="Панель студента на телефоне"><br><sub>Мои тесты</sub></td>
+    <td align="center" valign="top"><img src="docs/images/phone-runner.webp" width="250" alt="Вопрос с картинкой на телефоне"><br><sub>Прохождение</sub></td>
+    <td align="center" valign="top"><img src="docs/images/phone-review.webp" width="250" alt="Разбор попытки на телефоне"><br><sub>Разбор попытки</sub></td>
   </tr>
 </table>
 
@@ -112,21 +112,19 @@
 
 ```mermaid
 flowchart LR
-    browser["Браузер<br/>SvelteKit SPA"] -->|HTTPS| proxy["Обратный прокси"]
-    proxy --> app["app<br/>Rust · axum"]
+    browser["Браузер<br/>SvelteKit SPA"] -->|HTTPS| app["app<br/>Rust · axum"]
     app --> db[("PostgreSQL 17")]
     app --> s3[("Garage S3<br/>картинки")]
-    app -->|SMTP| mail["Почтовый сервис"]
-    app -->|OAuth| yandex["Яндекс ID"]
     db -.->|WAL-G| backup[("backup-garage<br/>отдельный диск")]
     s3 -.->|rclone| backup
 ```
 
-| | |
+| Часть | Что внутри |
 |---|---|
 | **Бэкенд** | Rust: axum, sqlx, utoipa (OpenAPI), tokio |
 | **Фронтенд** | SvelteKit 2 и Svelte 5, Tailwind, shadcn-svelte; статическая сборка, раздаётся бэкендом |
 | **Данные** | PostgreSQL 17, картинки — в Garage (S3) |
+| **Почта** | любой SMTP; письма подписаны DKIM, проверено на Яндексе и Gmail |
 | **Вход** | email и пароль (Argon2id с солью и перцем) или Яндекс ID; роли — студент, преподаватель, методист, суперпользователь |
 | **Бэкапы** | WAL-G с восстановлением на любой момент времени, копия бакета картинок, еженедельная проверка восстановления |
 | **Проверки** | `just ci`: clippy, тесты бэкенда и фронтенда, актуальность OpenAPI-типов; сквозные тесты Playwright |
@@ -136,21 +134,21 @@ flowchart LR
 Нужны Rust, Node.js 24, Docker и [`just`](https://github.com/casey/just).
 
 ```sh
-cp .env.example .env                              # заполнить секреты по комментариям в файле
-docker compose -f docker-compose.dev.yml up -d   # PostgreSQL и Garage
-# ключ и бакет Garage — те же значения, что S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY и S3_BUCKET в .env
+cp .env.example .env    # секреты — по комментариям в файле
+docker compose -f docker-compose.dev.yml up -d
+# ключ и бакет Garage: значения S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET из .env
 deploy/garage/init.sh docker-compose.dev.yml garage <key-id> <key-secret> <bucket>
 (cd frontend && npm ci)
-just dev                                          # бэкенд и Vite с прокси /api
+just dev                # бэкенд и Vite с прокси /api
 ```
 
-Первый суперпользователь и демо-курс ПДД:
+Первый суперпользователь (команда выведет ссылку для пароля) и демо-курс ПДД:
 
 ```sh
 git clone https://github.com/etspring/pdd_russia ~/pdd_russia
-set -a; . ./.env; set +a                         # приложение читает окружение, а не .env
+set -a; . ./.env; set +a    # приложение читает окружение, а не файл
 cd backend
-cargo run -p app -- create-superuser --email you@example.org   # выведет ссылку для пароля
+cargo run -p app -- create-superuser --email you@example.org
 cargo run -p app -- seed-pdd --dir ~/pdd_russia --owner you@example.org
 ```
 
