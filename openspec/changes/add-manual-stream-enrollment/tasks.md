@@ -13,5 +13,5 @@
 
 ## 3. Выкатка
 
-- [ ] 3.1 `just ci` зелёный, `openspec validate --strict` проходит, коммит и push, CI на GitHub зелёный.
+- [x] 3.1 `just ci` зелёный, `openspec validate --strict` проходит, коммит и push, CI на GitHub зелёный.
 - [ ] 3.2 Выкатить на стенд: новый образ `app`, `/health/ready` отвечает 200, на живом стенде форма добавляет студента в поток.
