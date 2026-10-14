@@ -24,10 +24,10 @@
 	const testId = $derived(page.params.id ?? '');
 
 	// Отдельного эндпоинта «тест для студента» нет: берём карточку из панели.
-	const info = new Resource<{ test: DashboardTest; group: 'available' | 'scheduled' | 'completed' } | null>(
+	const info = new Resource<{ test: DashboardTest; group: 'available' | 'scheduled' | 'completed' | 'closed' } | null>(
 		async () => {
 			const dashboard = await unwrap(api.GET('/api/dashboard'));
-			for (const group of ['available', 'scheduled', 'completed'] as const) {
+			for (const group of ['available', 'scheduled', 'completed', 'closed'] as const) {
 				const test = dashboard[group].find((item) => item.test_id === testId);
 				if (test) return { test, group };
 			}
@@ -140,7 +140,7 @@
 										<Alert.Description>
 											{test.opens_at
 												? `Тест откроется ${formatDateTime(test.opens_at)}.`
-												: 'Тест сейчас закрыт для вашего потока.'}
+												: 'Тест пока закрыт для вашего потока: его откроет преподаватель.'}
 										</Alert.Description>
 									</Alert.Root>
 								{:else if exhausted(test)}

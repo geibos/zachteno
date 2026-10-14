@@ -1297,7 +1297,7 @@
         "tags": [
           "attempts"
         ],
-        "summary": "Доступные, запланированные и пройденные тесты студента.",
+        "summary": "Доступные, запланированные, пройденные и пока закрытые тесты студента, его потоки.",
         "operationId": "dashboard",
         "responses": {
           "200": {
@@ -1867,6 +1867,48 @@
               }
             }
           }
+        }
+      }
+    },
+    "/api/streams/{stream_id}/members": {
+      "post": {
+        "tags": [
+          "streams"
+        ],
+        "summary": "Добавляет в поток зарегистрированных пользователей по email; исключённых возвращает.\nАккаунтов не создаёт: незнакомые адреса попадают в отчёт как «не найден».",
+        "operationId": "add_members",
+        "parameters": [
+          {
+            "name": "stream_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewMembers"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AddReport"
+                }
+              }
+            }
+          },
+          "404": {}
         }
       }
     },
@@ -2474,6 +2516,68 @@
   },
   "components": {
     "schemas": {
+      "AddOutcome": {
+        "type": "object",
+        "description": "Строка отчёта о добавлении.",
+        "required": [
+          "email",
+          "status"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": "string",
+            "description": "Адрес как в запросе, после нормализации (если она удалась)."
+          },
+          "email_verified": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/AddStatus"
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "AddReport": {
+        "type": "object",
+        "description": "Отчёт о добавлении.",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AddOutcome"
+            }
+          }
+        }
+      },
+      "AddStatus": {
+        "type": "string",
+        "description": "Итог по одному адресу.",
+        "enum": [
+          "added",
+          "already_member",
+          "restored",
+          "not_found",
+          "invalid"
+        ]
+      },
       "AnswerInput": {
         "type": "object",
         "description": "Ответ на вопрос.",
@@ -3138,7 +3242,9 @@
         "required": [
           "available",
           "scheduled",
-          "completed"
+          "completed",
+          "closed",
+          "streams"
         ],
         "properties": {
           "available": {
@@ -3146,6 +3252,13 @@
             "items": {
               "$ref": "#/components/schemas/DashboardTest"
             }
+          },
+          "closed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardTest"
+            },
+            "description": "Окно для потока закрыто и не запланировано, сданных попыток нет: тест виден, начать нельзя."
           },
           "completed": {
             "type": "array",
@@ -3158,6 +3271,13 @@
             "items": {
               "$ref": "#/components/schemas/DashboardTest"
             }
+          },
+          "streams": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Названия потоков, в которых студент состоит."
           }
         }
       },
@@ -3746,6 +3866,21 @@
         "properties": {
           "label": {
             "type": "string"
+          }
+        }
+      },
+      "NewMembers": {
+        "type": "object",
+        "description": "Список адресов для ручного добавления.",
+        "required": [
+          "emails"
+        ],
+        "properties": {
+          "emails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

@@ -617,7 +617,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Доступные, запланированные и пройденные тесты студента. */
+        /** Доступные, запланированные, пройденные и пока закрытые тесты студента, его потоки. */
         get: operations["dashboard"];
         put?: never;
         post?: never;
@@ -909,6 +909,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/streams/{stream_id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Добавляет в поток зарегистрированных пользователей по email; исключённых возвращает.
+         *     Аккаунтов не создаёт: незнакомые адреса попадают в отчёт как «не найден».
+         */
+        post: operations["add_members"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/streams/{stream_id}/members/{user_id}": {
         parameters: {
             query?: never;
@@ -1172,6 +1192,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Строка отчёта о добавлении. */
+        AddOutcome: {
+            display_name?: string | null;
+            /** @description Адрес как в запросе, после нормализации (если она удалась). */
+            email: string;
+            email_verified?: boolean | null;
+            status: components["schemas"]["AddStatus"];
+            /** Format: uuid */
+            user_id?: string | null;
+        };
+        /** @description Отчёт о добавлении. */
+        AddReport: {
+            results: components["schemas"]["AddOutcome"][];
+        };
+        /**
+         * @description Итог по одному адресу.
+         * @enum {string}
+         */
+        AddStatus: "added" | "already_member" | "restored" | "not_found" | "invalid";
         /** @description Ответ на вопрос. */
         AnswerInput: {
             /**
@@ -1380,8 +1419,12 @@ export interface components {
         /** @description Тесты студента по группам. */
         Dashboard: {
             available: components["schemas"]["DashboardTest"][];
+            /** @description Окно для потока закрыто и не запланировано, сданных попыток нет: тест виден, начать нельзя. */
+            closed: components["schemas"]["DashboardTest"][];
             completed: components["schemas"]["DashboardTest"][];
             scheduled: components["schemas"]["DashboardTest"][];
+            /** @description Названия потоков, в которых студент состоит. */
+            streams: string[];
         };
         /** @description Тест на панели. */
         DashboardTest: {
@@ -1575,6 +1618,10 @@ export interface components {
         /** @description Новая ссылка. */
         NewInvite: {
             label?: string;
+        };
+        /** @description Список адресов для ручного добавления. */
+        NewMembers: {
+            emails: string[];
         };
         /** @description Новый поток. */
         NewStream: {
@@ -3479,6 +3526,37 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["IssuedInvite"];
                 };
+            };
+        };
+    };
+    add_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                stream_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewMembers"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AddReport"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

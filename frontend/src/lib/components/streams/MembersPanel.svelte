@@ -9,6 +9,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { api, unwrap, type Schema } from '$lib/api/client';
 	import { formatDateTime } from '$lib/format';
+	import AddMembersForm from './AddMembersForm.svelte';
 
 	type Member = Schema<'Member'>;
 
@@ -80,11 +81,13 @@
 {/snippet}
 
 <div class="grid gap-6">
+	<AddMembersForm {streamId} {onchange} />
+
 	{#if active.length === 0}
 		<EmptyState
 			icon={UsersIcon}
 			title="В потоке пока нет студентов"
-			text="Создайте пригласительную ссылку на вкладке «Ссылки» и отправьте её студентам."
+			text="Добавьте зарегистрированных студентов по email или отправьте пригласительную ссылку с вкладки «Ссылки»."
 		/>
 	{:else}
 		<ul class="bg-card divide-y rounded-xl border">

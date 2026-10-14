@@ -71,11 +71,15 @@ impl DashboardTest {
 }
 
 /// Тесты студента по группам.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Default, Serialize, ToSchema)]
 pub(crate) struct Dashboard {
     pub available: Vec<DashboardTest>,
     pub scheduled: Vec<DashboardTest>,
     pub completed: Vec<DashboardTest>,
+    /// Окно для потока закрыто и не запланировано, сданных попыток нет: тест виден, начать нельзя.
+    pub closed: Vec<DashboardTest>,
+    /// Названия потоков, в которых студент состоит.
+    pub streams: Vec<String>,
 }
 
 const DASHBOARD_QUERY: &str = "WITH mine AS (
@@ -101,7 +105,7 @@ const DASHBOARD_QUERY: &str = "WITH mine AS (
                       AND NOT a.is_preview AND a.submitted_at IS NOT NULL), '{}') AS scores
          FROM mine ORDER BY mine.course_title, mine.title";
 
-/// Доступные, запланированные и пройденные тесты студента.
+/// Доступные, запланированные, пройденные и пока закрытые тесты студента, его потоки.
 #[utoipa::path(get, path = "/api/dashboard", tag = "attempts", responses((status = 200, body = Dashboard)))]
 pub(crate) async fn dashboard(
     State(state): State<AppState>,
@@ -113,7 +117,14 @@ pub(crate) async fn dashboard(
     for row in rows {
         tests.push(enrich(&state, &user, row).await?);
     }
-    Ok(Json(group(tests, state.clock.now())))
+    let streams = sqlx::query_scalar(
+        "SELECT s.name FROM stream_members m JOIN streams s ON s.id = m.stream_id
+         WHERE m.user_id = $1 AND m.removed_at IS NULL ORDER BY s.name",
+    )
+    .bind(user.id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(Dashboard { streams, ..group(tests, state.clock.now()) }))
 }
 
 /// Итог последней сданной попытки: доступность разбора и итоговый балл.
@@ -174,8 +185,7 @@ fn into_test(row: DashRow, last: LastResult) -> DashboardTest {
 }
 
 fn group(tests: Vec<DashboardTest>, now: OffsetDateTime) -> Dashboard {
-    let mut dashboard =
-        Dashboard { available: Vec::new(), scheduled: Vec::new(), completed: Vec::new() };
+    let mut dashboard = Dashboard::default();
     for test in tests {
         let start = test.can_start();
         let planned = !test.is_open && test.opens_at.is_some_and(|opens| opens > now);
@@ -190,7 +200,7 @@ fn group(tests: Vec<DashboardTest>, now: OffsetDateTime) -> Dashboard {
             (true, _, false) => dashboard.available.push(test),
             (false, true, _) => dashboard.scheduled.push(test),
             (false, false, true) => dashboard.completed.push(test),
-            (false, false, false) => {}
+            (false, false, false) => dashboard.closed.push(test),
         }
     }
     dashboard

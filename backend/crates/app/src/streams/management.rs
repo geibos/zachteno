@@ -1,16 +1,20 @@
 //! Потоки: создание, состав, назначение на курсы, исключение студентов.
 
+use std::collections::HashSet;
+use std::net::IpAddr;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, PgConnection};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::access::{self, CourseRole};
 use crate::audit::AuditEntry;
+use crate::auth::account::normalize_email;
 use crate::auth::session::CurrentUser;
 use crate::authoring::courses::{Created, non_empty};
 use crate::error::{ApiResult, AppError};
@@ -260,6 +264,209 @@ pub(crate) async fn restore_member(
         .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Список адресов для ручного добавления.
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct NewMembers {
+    pub emails: Vec<String>,
+}
+
+/// Больше любого потока, но ограничивает размер запроса.
+const MAX_EMAILS: usize = 500;
+
+/// Итог по одному адресу.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AddStatus {
+    Added,
+    AlreadyMember,
+    Restored,
+    NotFound,
+    Invalid,
+}
+
+/// Строка отчёта о добавлении.
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct AddOutcome {
+    /// Адрес как в запросе, после нормализации (если она удалась).
+    pub email: String,
+    pub status: AddStatus,
+    pub user_id: Option<Uuid>,
+    pub display_name: Option<String>,
+    pub email_verified: Option<bool>,
+}
+
+/// Отчёт о добавлении.
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct AddReport {
+    pub results: Vec<AddOutcome>,
+}
+
+#[derive(FromRow)]
+struct Candidate {
+    id: Uuid,
+    display_name: String,
+    email_verified: bool,
+    removed: Option<bool>,
+}
+
+/// Добавляет в поток зарегистрированных пользователей по email; исключённых возвращает.
+/// Аккаунтов не создаёт: незнакомые адреса попадают в отчёт как «не найден».
+#[utoipa::path(post, path = "/api/streams/{stream_id}/members", tag = "streams", params(("stream_id" = Uuid, Path)),
+    request_body = NewMembers, responses((status = 200, body = AddReport), (status = 404)))]
+pub(crate) async fn add_members(
+    State(state): State<AppState>,
+    (user, ClientIp(ip)): (CurrentUser, ClientIp),
+    Path(stream_id): Path<Uuid>,
+    Json(request): Json<NewMembers>,
+) -> ApiResult<Json<AddReport>> {
+    require_manager(&state.db, &user, stream_id).await?;
+    if request.emails.len() > MAX_EMAILS {
+        return Err(AppError::BadRequest(format!("Не больше {MAX_EMAILS} адресов за раз")));
+    }
+    let now = state.clock.now();
+    let mut tx = state.db.begin().await?;
+    let mut outcomes = Vec::new();
+    for parsed in distinct_emails(&request.emails) {
+        outcomes.push(match parsed {
+            ParsedEmail::Valid(email) => add_one(&mut tx, stream_id, email, now).await?,
+            ParsedEmail::Invalid(shown) => AddOutcome::bare(shown, AddStatus::Invalid),
+        });
+    }
+    audit_added(&mut tx, (user.id, ip), stream_id, &outcomes).await?;
+    tx.commit().await?;
+    Ok(Json(AddReport { results: outcomes }))
+}
+
+impl AddOutcome {
+    const fn bare(email: String, status: AddStatus) -> Self {
+        Self { email, status, user_id: None, display_name: None, email_verified: None }
+    }
+}
+
+/// Адрес из списка: нормализованный или, если некорректен, как его ввели.
+enum ParsedEmail {
+    Valid(String),
+    Invalid(String),
+}
+
+impl ParsedEmail {
+    fn parse(raw_email: &str) -> Self {
+        normalize_email(raw_email).map_or_else(
+            |_invalid| Self::Invalid(raw_email.trim().to_owned()),
+            |valid| Self::Valid(valid.to_lowercase()),
+        )
+    }
+
+    fn key(&self) -> &str {
+        match self {
+            Self::Valid(email) | Self::Invalid(email) => email,
+        }
+    }
+}
+
+/// Адреса без повторов и пустых строк, в порядке ввода.
+fn distinct_emails(raw: &[String]) -> Vec<ParsedEmail> {
+    let mut seen = HashSet::new();
+    raw.iter()
+        .map(|raw_email| ParsedEmail::parse(raw_email))
+        .filter(|parsed| !parsed.key().is_empty() && seen.insert(parsed.key().to_owned()))
+        .collect()
+}
+
+/// Одна запись аудита на вызов: кого добавили и кого вернули.
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn audit_added(
+    tx: &mut PgConnection,
+    (actor, ip): (Uuid, IpAddr),
+    stream_id: Uuid,
+    outcomes: &[AddOutcome],
+) -> ApiResult<()> {
+    let added = changed(outcomes, AddStatus::Added);
+    let restored = changed(outcomes, AddStatus::Restored);
+    if added.is_empty() && restored.is_empty() {
+        return Ok(());
+    }
+    AuditEntry::new("stream.add_members", "stream")
+        .by(Some(actor), Some(ip))
+        .on(stream_id)
+        .with(serde_json::json!({ "added": added, "restored": restored }))
+        .record(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+fn changed(outcomes: &[AddOutcome], status: AddStatus) -> Vec<Uuid> {
+    outcomes
+        .iter()
+        .filter(|outcome| outcome.status == status)
+        .filter_map(|outcome| outcome.user_id)
+        .collect()
+}
+
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn add_one(
+    tx: &mut PgConnection,
+    stream_id: Uuid,
+    email: String,
+    now: OffsetDateTime,
+) -> ApiResult<AddOutcome> {
+    let Some(found) = find_candidate(tx, stream_id, &email).await? else {
+        return Ok(AddOutcome::bare(email, AddStatus::NotFound));
+    };
+    let status = enroll(tx, stream_id, &found, now).await?;
+    Ok(AddOutcome {
+        email,
+        status,
+        user_id: Some(found.id),
+        display_name: Some(found.display_name),
+        email_verified: Some(found.email_verified),
+    })
+}
+
+/// cancel-safe: yes — только чтение.
+async fn find_candidate(
+    tx: &mut PgConnection,
+    stream_id: Uuid,
+    email: &str,
+) -> ApiResult<Option<Candidate>> {
+    Ok(sqlx::query_as(
+        "SELECT u.id, u.display_name, u.email_verified_at IS NOT NULL AS email_verified,
+                (SELECT m.removed_at IS NOT NULL FROM stream_members m WHERE m.stream_id = $2 AND m.user_id = u.id) AS removed
+         FROM users u WHERE u.email_lower = $1",
+    )
+    .bind(email)
+    .bind(stream_id)
+    .fetch_optional(&mut *tx)
+    .await?)
+}
+
+const ADD_MEMBER: &str =
+    "INSERT INTO stream_members (stream_id, user_id, joined_at) VALUES ($1, $2, $3)
+     ON CONFLICT (stream_id, user_id) DO NOTHING";
+
+/// Новый участник, возврат исключённого или ничего, если уже в потоке.
+///
+/// cancel-safe: yes — в транзакции вызывающего.
+async fn enroll(
+    tx: &mut PgConnection,
+    stream_id: Uuid,
+    found: &Candidate,
+    now: OffsetDateTime,
+) -> ApiResult<AddStatus> {
+    let (change, status) = match found.removed {
+        Some(false) => return Ok(AddStatus::AlreadyMember),
+        Some(true) => {
+            (sqlx::query(RESTORE_MEMBER).bind(stream_id).bind(found.id), AddStatus::Restored)
+        }
+        None => {
+            (sqlx::query(ADD_MEMBER).bind(stream_id).bind(found.id).bind(now), AddStatus::Added)
+        }
+    };
+    let _changed = change.execute(&mut *tx).await?;
+    Ok(status)
 }
 
 /// Поток курса для фильтров.

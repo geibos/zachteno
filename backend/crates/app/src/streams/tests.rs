@@ -385,3 +385,119 @@ async fn manager_restores_removed_student_and_stranger_cannot(db: PgPool) {
             .unwrap();
     assert_eq!(audited, 1, "возврат в аудите");
 }
+
+/// Итог добавления по адресу из ответа `POST /api/streams/{id}/members`.
+fn outcome<'body>(body: &'body Json, email: &str) -> &'body Json {
+    body["results"]
+        .as_array()
+        .and_then(|list| list.iter().find(|item| item["email"] == email))
+        .unwrap_or_else(|| panic!("нет итога для {email}: {body}"))
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn manager_adds_registered_students_by_email(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let (mut newcomer, _newcomer_id) = testing::register_verified(&state, "new@example.com").await;
+    let (_unverified, _fresh_id) = testing::register(&state, "fresh@example.com").await;
+    let path = format!("/api/streams/{}/members", room.stream_id);
+    let emails = json!({ "emails": [
+        "New@Example.com", "fresh@example.com", "student@example.com",
+        "ghost@example.com", "not-an-email", "new@example.com"
+    ] });
+    let (status, body) = room.methodist.post(&path, emails).await;
+    assert_eq!(status, StatusCode::OK, "добавление: {body}");
+    assert_eq!(body["results"].as_array().map(Vec::len), Some(5), "дубли схлопнуты: {body}");
+    assert_eq!(outcome(&body, "new@example.com")["status"], "added");
+    assert_eq!(outcome(&body, "new@example.com")["email_verified"], true);
+    assert_eq!(outcome(&body, "fresh@example.com")["status"], "added");
+    assert_eq!(
+        outcome(&body, "fresh@example.com")["email_verified"],
+        false,
+        "неподтверждённый отмечен"
+    );
+    assert_eq!(outcome(&body, "student@example.com")["status"], "already_member");
+    assert_eq!(outcome(&body, "ghost@example.com")["status"], "not_found");
+    assert_eq!(outcome(&body, "not-an-email")["status"], "invalid");
+    let (_, dashboard) = newcomer.get("/api/dashboard").await;
+    assert_eq!(dashboard["available"].as_array().map(Vec::len), Some(1), "тест виден: {dashboard}");
+    let created: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE email_lower = 'ghost@example.com'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(created, 0, "аккаунт не создан");
+    let audited: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'stream.add_members'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(audited, 1, "добавление в аудите");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn manual_add_restores_removed_student(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let member = format!("/api/streams/{}/members/{}", room.stream_id, room.student_id);
+    assert_eq!(room.methodist.delete(&member).await.0, StatusCode::NO_CONTENT, "исключён");
+    let path = format!("/api/streams/{}/members", room.stream_id);
+    let (_, body) = room.methodist.post(&path, json!({ "emails": ["student@example.com"] })).await;
+    assert_eq!(outcome(&body, "student@example.com")["status"], "restored", "{body}");
+    let (_, dashboard) = room.student.get("/api/dashboard").await;
+    assert_eq!(dashboard["available"].as_array().map(Vec::len), Some(1), "тесты снова видны");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn stranger_cannot_add_members_and_list_is_limited(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let (mut stranger, _id) = testing::register(&state, "stranger@example.com").await;
+    let path = format!("/api/streams/{}/members", room.stream_id);
+    let (status, _) = stranger.post(&path, json!({ "emails": ["stranger@example.com"] })).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "посторонний не добавляет");
+    let members: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM stream_members WHERE stream_id = $1::uuid AND removed_at IS NULL",
+    )
+    .bind(&room.stream_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(members, 1, "состав не изменился");
+    let many: Vec<String> = (0..501).map(|index| format!("s{index}@example.com")).collect();
+    let (too_many, _) = room.methodist.post(&path, json!({ "emails": many })).await;
+    assert_eq!(too_many, StatusCode::BAD_REQUEST, "больше 500 адресов");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn closed_test_is_listed_and_streams_are_named(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    room.window(json!({ "action": "close" })).await;
+    let (_, dashboard) = room.student.get("/api/dashboard").await;
+    assert_eq!(dashboard["available"].as_array().map(Vec::len), Some(0), "начать нельзя");
+    assert_eq!(
+        dashboard["closed"][0]["test_id"],
+        room.test_id.as_str(),
+        "тест в закрытых: {dashboard}"
+    );
+    assert_eq!(dashboard["streams"], json!(["ИВТ-21"]), "поток назван");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn student_in_stream_without_course_sees_stream_name(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let stream_id =
+        testing::id_of(room.methodist.post("/api/streams", json!({ "name": "Пустой" })).await);
+    let (_, invite) = room
+        .methodist
+        .post(&format!("/api/streams/{stream_id}/invites"), json!({ "label": "" }))
+        .await;
+    let token = invite["url"].as_str().unwrap().rsplit('/').next().unwrap().to_owned();
+    let (mut lonely, _id) = testing::register(&state, "lonely@example.com").await;
+    let _joined = lonely.post(&format!("/api/invites/{token}/join"), json!({})).await;
+    let (_, dashboard) = lonely.get("/api/dashboard").await;
+    assert_eq!(dashboard["streams"], json!(["Пустой"]), "{dashboard}");
+    assert_eq!(dashboard["closed"].as_array().map(Vec::len), Some(0), "тестов нет");
+}

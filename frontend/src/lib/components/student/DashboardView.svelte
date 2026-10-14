@@ -3,6 +3,7 @@
 	import ClipboardListIcon from '@lucide/svelte/icons/clipboard-list';
 	import CalendarIcon from '@lucide/svelte/icons/calendar';
 	import CircleCheckIcon from '@lucide/svelte/icons/circle-check';
+	import LockIcon from '@lucide/svelte/icons/lock';
 	import * as Alert from '$lib/components/ui/alert';
 	import LoadState from '$lib/components/app/LoadState.svelte';
 	import EmptyState from '$lib/components/app/EmptyState.svelte';
@@ -36,11 +37,13 @@
 
 	<LoadState resource={dashboard}>
 		{#snippet children(data)}
-			{#if data.available.length + data.scheduled.length + data.completed.length === 0}
+			{#if data.available.length + data.scheduled.length + data.completed.length + data.closed.length === 0}
 				<EmptyState
 					icon={ClipboardListIcon}
 					title="Тестов пока нет"
-					text="Чтобы попасть в поток, перейдите по пригласительной ссылке от преподавателя."
+					text={data.streams.length > 0
+						? `Вы в ${data.streams.length > 1 ? 'потоках' : 'потоке'} ${data.streams.map((name) => `«${name}»`).join(', ')}. Тесты появятся здесь, когда преподаватель их откроет.`
+						: 'Чтобы попасть в поток, перейдите по пригласительной ссылке от преподавателя.'}
 				/>
 			{:else}
 				<section class="grid gap-3" aria-labelledby="available-heading">
@@ -66,6 +69,22 @@
 						<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 							{#each data.scheduled as test (test.test_id)}
 								<TestCard {test} kind="scheduled" />
+							{/each}
+						</div>
+					</section>
+				{/if}
+
+				{#if data.closed.length > 0}
+					<section class="grid gap-3" aria-labelledby="closed-heading">
+						<h2 id="closed-heading" class="flex items-center gap-2 text-lg font-semibold">
+							<LockIcon class="text-primary size-5" />Пока закрыты
+						</h2>
+						<p class="text-muted-foreground -mt-1 text-sm">
+							Тесты ваших курсов, которые преподаватель ещё не открыл для вашего потока.
+						</p>
+						<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+							{#each data.closed as test (test.test_id)}
+								<TestCard {test} kind="closed" />
 							{/each}
 						</div>
 					</section>

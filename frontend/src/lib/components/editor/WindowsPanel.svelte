@@ -5,6 +5,8 @@
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import LoaderIcon from '@lucide/svelte/icons/loader-circle';
+	import CopyIcon from '@lucide/svelte/icons/copy';
+	import LinkIcon from '@lucide/svelte/icons/link';
 	import { toast } from 'svelte-sonner';
 	import * as Card from '$lib/components/ui/card';
 	import * as Dialog from '$lib/components/ui/dialog';
@@ -29,6 +31,18 @@
 	);
 
 	let busy = $state<string | null>(null);
+
+	// Прямая ссылка для студентов: сама доступа не даёт, сервер проверит поток и окно.
+	const studentLink = $derived(`${location.origin}/tests/${testId}/start`);
+
+	async function copyLink(): Promise<void> {
+		try {
+			await navigator.clipboard.writeText(studentLink);
+			toast.success('Ссылка скопирована');
+		} catch {
+			toast.error('Не удалось скопировать — выделите ссылку вручную');
+		}
+	}
 
 	async function change(streamId: string, body: WindowChange, success: string): Promise<void> {
 		await unwrap(
@@ -109,6 +123,17 @@
 		<Card.Description>Когда студенты каждого потока могут начинать попытки. Время — по МСК.</Card.Description>
 	</Card.Header>
 	<Card.Content class="grid gap-4">
+		<div class="grid gap-2 rounded-lg border p-3">
+			<span class="flex items-center gap-2 text-sm font-medium"><LinkIcon class="size-4" />Ссылка для студентов</span>
+			<div class="flex flex-wrap items-center gap-2">
+				<code class="bg-muted min-w-0 flex-1 rounded px-2 py-1 text-xs break-all" data-testid="student-link">{studentLink}</code>
+				<Button size="sm" variant="outline" onclick={copyLink}><CopyIcon />Скопировать ссылку для студентов</Button>
+			</div>
+			<p class="text-muted-foreground text-xs">
+				Откроется только у участников потоков этого курса; начать попытку можно, когда окно открыто.
+			</p>
+		</div>
+
 		<Alert.Root>
 			<InfoIcon />
 			<Alert.Description>
@@ -153,6 +178,9 @@
 										{#if window.close_at}<span>Закрытие: {formatDateTime(window.close_at)}</span>{/if}
 										{#if window.closed_at && !window.is_open}
 											<span>Закрыто {formatDateTime(window.closed_at)}</span>
+										{/if}
+										{#if !window.is_open && !scheduled(window)}
+											<span>Студенты потока видят тест в разделе «Пока закрыты», но начать не могут.</span>
 										{/if}
 									</div>
 								</div>

@@ -10,7 +10,7 @@
 	import { count, formatDateTime, formatScore } from '$lib/format';
 	import { reviewStatusText } from '$lib/attempt/review-status';
 
-	type Kind = 'available' | 'scheduled' | 'completed';
+	type Kind = 'available' | 'scheduled' | 'completed' | 'closed';
 
 	let { test, kind }: { test: Schema<'DashboardTest'>; kind: Kind } = $props();
 
@@ -76,8 +76,9 @@
 			{:else}
 				<Button href="/tests/{test.test_id}/start">Начать</Button>
 			{/if}
-		{:else if kind === 'scheduled'}
+		{:else if kind === 'scheduled' || kind === 'closed'}
 			<Button href="/tests/{test.test_id}/start" variant="outline">Подробнее</Button>
+			{#if kind === 'closed'}<Badge variant="secondary">откроет преподаватель</Badge>{/if}
 		{:else if test.last_submitted_attempt_id}
 			<Button href="/attempts/{test.last_submitted_attempt_id}/review" variant={test.review?.available ? 'default' : 'outline'}>
 				{test.review?.available ? 'Разбор последней попытки' : 'Последняя попытка'}

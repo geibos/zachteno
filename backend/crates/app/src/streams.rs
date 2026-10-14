@@ -26,6 +26,7 @@ fn management_routes(router: OpenApiRouter<AppState>) -> OpenApiRouter<AppState>
         .routes(routes!(management::course_streams))
         .routes(routes!(management::assign_course))
         .routes(routes!(management::unassign_course))
+        .routes(routes!(management::add_members))
         .routes(routes!(management::remove_member))
         .routes(routes!(management::restore_member))
 }
