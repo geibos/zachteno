@@ -73,8 +73,10 @@
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 
-	function positiveInt(value: string): number | null {
-		return /^\d+$/.test(value.trim()) && Number(value) >= 1 ? Number(value) : null;
+	/** `bind:value` у `type="number"` отдаёт число или `null`, а не строку. */
+	function positiveInt(value: string | number | null | undefined): number | null {
+		const text = String(value ?? '').trim();
+		return /^\d+$/.test(text) && Number(text) >= 1 ? Number(text) : null;
 	}
 
 	const problems = $derived.by(() => {
