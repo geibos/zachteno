@@ -28,6 +28,7 @@ rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "query", "rustls", "http2"] }
 rust-embed = { version = "8.13.0", features = ["mime-guess"] }
 rust_decimal = { version = "1.43.0", features = ["serde-with-str"] }
+rust_xlsxwriter = "0.100.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -47,6 +48,7 @@ uuid = { version = "1.28.0", features = ["v4", "serde"] }
 workspace = true
 
 [dev-dependencies]
+calamine = "0.37.0"
 http-body-util = "0.1.5"
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }

@@ -20,7 +20,9 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(tables::test_results))
         .routes(routes!(tables::course_summary))
         .routes(routes!(export::test_csv))
+        .routes(routes!(export::test_xlsx))
         .routes(routes!(export::course_csv))
+        .routes(routes!(export::course_xlsx))
         .routes(routes!(stats::question_stats))
         .routes(routes!(details::attempt_details))
 }

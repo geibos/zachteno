@@ -36,7 +36,8 @@ export const AUDIT_ACTIONS: ReadonlyArray<readonly [string, string]> = [
 	['window.schedule', 'Расписание окна'],
 	['antifraud.view', 'Просмотр связей антифрода'],
 	['antifraud.decision', 'Решение по связи антифрода'],
-	['export.csv', 'Выгрузка CSV']
+	['export.csv', 'Выгрузка CSV'],
+	['export.xlsx', 'Выгрузка Excel']
 ];
 
 const LABELS = new Map(AUDIT_ACTIONS);

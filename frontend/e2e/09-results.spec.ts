@@ -53,5 +53,15 @@ test('19. таблица результатов: фильтр по потоку,
 	expect(lines[1]).toContain(other.streamName);
 	for (const account of [best, worst]) expect(body.toString('utf8')).not.toContain(account.email);
 
+	// Excel — с тем же фильтром, настоящий XLSX (zip-архив).
+	const xlsxLink = page.getByRole('link', { name: /Скачать Excel/ });
+	await expect(xlsxLink).toHaveAttribute('href', new RegExp(`results\\.xlsx\\?stream_id=${other.streamId}`));
+	const xlsxPromise = page.waitForEvent('download');
+	await xlsxLink.click();
+	const xlsx = await xlsxPromise;
+	expect(xlsx.suggestedFilename()).toMatch(/^results.*\.xlsx$/);
+	const book = await readFile((await xlsx.path())!);
+	expect(book.subarray(0, 2).toString('latin1')).toBe('PK');
+
 	for (const account of [best, worst, middle]) await account.api.dispose();
 });

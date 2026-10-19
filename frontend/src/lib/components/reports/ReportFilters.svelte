@@ -4,21 +4,27 @@
 	import { Label } from '$lib/components/ui/label';
 	import { selectClass } from '$lib/components/editor/styles';
 	import { cn } from '$lib/utils';
-	import type { Mode } from './table';
+	import { exportUrl, type ExportFormat, type Mode } from './table';
 
 	let {
 		streams,
 		streamId = $bindable(''),
 		mode = $bindable<Mode>('final'),
-		csvHref,
-		csvName
+		exportPath,
+		exportName
 	}: {
 		streams: Array<{ id: string; name: string }>;
 		streamId?: string;
 		mode?: Mode;
-		csvHref?: string;
-		csvName?: string;
+		/** Путь выгрузки без расширения; без него кнопок выгрузки нет. */
+		exportPath?: string;
+		/** Имя файла без расширения. */
+		exportName?: string;
 	} = $props();
+
+	function href(format: ExportFormat): string | undefined {
+		return exportPath ? exportUrl(exportPath, format, { stream_id: streamId, mode }) : undefined;
+	}
 
 	const modes: Array<{ value: Mode; label: string }> = [
 		{ value: 'final', label: 'Итоговая попытка' },
@@ -57,9 +63,20 @@
 		</div>
 	</div>
 
-	{#if csvHref}
-		<Button href={csvHref} download={csvName} variant="outline" class="sm:ml-auto" data-sveltekit-reload>
-			<DownloadIcon />Скачать CSV
-		</Button>
+	{#if exportPath}
+		<div class="flex flex-wrap gap-2 sm:ml-auto">
+			<Button href={href('xlsx')} download={`${exportName}.xlsx`} variant="outline" data-sveltekit-reload>
+				<DownloadIcon />Скачать Excel
+			</Button>
+			<Button
+				href={href('csv')}
+				download={`${exportName}.csv`}
+				variant="ghost"
+				aria-label="Скачать CSV"
+				data-sveltekit-reload
+			>
+				CSV
+			</Button>
+		</div>
 	{/if}
 </div>

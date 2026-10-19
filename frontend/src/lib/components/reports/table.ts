@@ -17,9 +17,16 @@ export function reportQuery(params: { stream_id?: string | null; mode?: Mode | n
 	return query ? `?${query}` : '';
 }
 
-/** Ссылка на CSV с теми же фильтрами, что и таблица. */
-export function csvUrl(base: string, params: { stream_id?: string | null; mode?: Mode | null }): string {
-	return base + reportQuery(params);
+/** Формат выгрузки отчёта. */
+export type ExportFormat = 'xlsx' | 'csv';
+
+/** Ссылка на выгрузку `path.format` с теми же фильтрами, что и таблица. */
+export function exportUrl(
+	path: string,
+	format: ExportFormat,
+	params: { stream_id?: string | null; mode?: Mode | null }
+): string {
+	return `${path}.${format}${reportQuery(params)}`;
 }
 
 /** Сравнение с «пустыми» значениями всегда в конце, независимо от направления. */

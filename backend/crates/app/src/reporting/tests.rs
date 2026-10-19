@@ -1,4 +1,7 @@
+use std::io::Cursor;
+
 use axum::http::StatusCode;
+use calamine::{Data, Reader as _, Xlsx, open_workbook_from_rs};
 use serde_json::json;
 use sqlx::PgPool;
 use time::Duration;
@@ -65,6 +68,35 @@ async fn csv_export_has_bom_and_is_audited(db: PgPool) {
             .await
             .unwrap();
     assert_eq!(audited, 1, "выгрузка в аудите");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn xlsx_export_has_typed_sheets_and_is_audited(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({})).await;
+    let _attempt = submitted(&mut room, &[(0, 0)]).await;
+    let (status, bytes) =
+        room.methodist.get_bytes(&format!("/api/tests/{}/results.xlsx", room.test_id)).await;
+    assert_eq!(status, StatusCode::OK, "выгрузка");
+    let mut book: Xlsx<_> = open_workbook_from_rs(Cursor::new(bytes)).unwrap();
+    assert_eq!(book.sheet_names(), ["Результаты", "Ответы", "Вопросы"], "листы");
+    let results = book.worksheet_range("Результаты").unwrap();
+    assert!(matches!(results.get_value((1, 8)), Some(Data::Float(_))), "балл числом");
+    assert!(matches!(results.get_value((1, 10)), Some(Data::Float(_))), "процент числом");
+    assert!(matches!(results.get_value((1, 13)), Some(Data::Float(_))), "балл за вопрос числом");
+    let answers = book.worksheet_range("Ответы").unwrap();
+    assert!(matches!(answers.get_value((1, 4)), Some(Data::String(_))), "ответ текстом");
+    let (summary_status, summary) =
+        room.methodist.get_bytes(&format!("/api/courses/{}/summary.xlsx", room.course_id)).await;
+    assert_eq!(summary_status, StatusCode::OK, "сводная");
+    let summary_book: Xlsx<_> = open_workbook_from_rs(Cursor::new(summary)).unwrap();
+    assert_eq!(summary_book.sheet_names(), ["Сводная"], "лист сводной");
+    let audited: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'export.xlsx'")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(audited, 2, "обе выгрузки в аудите");
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -221,7 +253,7 @@ async fn partial_answer_is_not_fully_correct_in_stats(db: PgPool) {
         room.methodist.get_bytes(&format!("/api/tests/{}/results.csv", room.test_id)).await;
     let csv = String::from_utf8(bytes).unwrap();
     assert!(csv.contains("Процент") && csv.contains("Итог, %"), "колонки процента: {csv}");
-    assert!(csv.contains("66.7"), "процент в строке: {csv}");
+    assert!(csv.contains(";66,7;"), "процент в строке с запятой: {csv}");
     let (_, stats) = room.methodist.get(&format!("/api/tests/{}/stats", room.test_id)).await;
     assert_eq!(stats[0]["fully_correct"], 0, "2 из 3 — не полностью верно: {stats}");
     assert_eq!(stats[0]["average_score"], "2", "средний балл учитывает частичный");

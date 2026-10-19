@@ -86,15 +86,17 @@ type Ids = BTreeMap<&'static str, String>;
 type Template = (&'static str, &'static str, &'static str, &'static str);
 
 /// Роль × эндпоинт × свой или чужой объект.
-const MATRIX: [Template; 42] = [
+const MATRIX: [Template; 44] = [
     // Просмотр курса A: все, кто на курсе не студент.
     ("GET", "/api/courses/{course}", "", "UHHAAAA"),
     ("GET", "/api/tests/{test}", "", "UHHAAAA"),
     ("GET", "/api/tests/{test}/results", "", "UHHAAAA"),
     ("GET", "/api/tests/{test}/results.csv", "", "UHHAAAA"),
+    ("GET", "/api/tests/{test}/results.xlsx", "", "UHHAAAA"),
     ("GET", "/api/tests/{test}/stats", "", "UHHAAAA"),
     ("GET", "/api/courses/{course}/summary", "", "UHHAAAA"),
     ("GET", "/api/courses/{course}/summary.csv", "", "UHHAAAA"),
+    ("GET", "/api/courses/{course}/summary.xlsx", "", "UHHAAAA"),
     ("GET", "/api/courses/{course}/streams", "", "UHHAAAA"),
     ("GET", "/api/courses/{course}/teachers", "", "UHHAAAA"),
     ("GET", "/api/tests/{test}/windows", "", "UHHAAAA"),

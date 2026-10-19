@@ -554,6 +554,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/courses/{course_id}/summary.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Сводная таблица курса в Excel. */
+        get: operations["course_xlsx"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/courses/{course_id}/teachers": {
         parameters: {
             query?: never;
@@ -1146,6 +1163,23 @@ export interface paths {
         };
         /** Таблица теста в CSV с теми же фильтрами. */
         get: operations["test_csv"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tests/{test_id}/results.xlsx": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Таблица теста в Excel с теми же фильтрами: листы «Результаты», «Ответы», «Вопросы». */
+        get: operations["test_xlsx"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3012,6 +3046,30 @@ export interface operations {
             };
         };
     };
+    course_xlsx: {
+        parameters: {
+            query?: {
+                stream_id?: string;
+                mode?: "final" | "all";
+            };
+            header?: never;
+            path: {
+                course_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                };
+            };
+        };
+    };
     list_teachers: {
         parameters: {
             query?: never;
@@ -3973,6 +4031,30 @@ export interface operations {
                 };
                 content: {
                     "text/csv": unknown;
+                };
+            };
+        };
+    };
+    test_xlsx: {
+        parameters: {
+            query?: {
+                stream_id?: string;
+                mode?: "final" | "all";
+            };
+            header?: never;
+            path: {
+                test_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
                 };
             };
         };

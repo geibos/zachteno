@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-	csvUrl,
+	exportUrl,
 	eventLabel,
 	formatSeconds,
 	nextSort,
@@ -37,15 +37,15 @@ function row(name: string, score: string, q1: { score: string | null; in_attempt
 	};
 }
 
-describe('csvUrl', () => {
-	it('добавляет только непустые параметры', () => {
-		expect(csvUrl('/api/tests/t1/results.csv', { stream_id: '', mode: 'final' })).toBe(
+describe('exportUrl', () => {
+	it('добавляет расширение и только непустые параметры', () => {
+		expect(exportUrl('/api/tests/t1/results', 'csv', { stream_id: '', mode: 'final' })).toBe(
 			'/api/tests/t1/results.csv?mode=final'
 		);
-		expect(csvUrl('/api/tests/t1/results.csv', { stream_id: 's1', mode: 'all' })).toBe(
-			'/api/tests/t1/results.csv?stream_id=s1&mode=all'
+		expect(exportUrl('/api/tests/t1/results', 'xlsx', { stream_id: 's1', mode: 'all' })).toBe(
+			'/api/tests/t1/results.xlsx?stream_id=s1&mode=all'
 		);
-		expect(csvUrl('/x.csv', {})).toBe('/x.csv');
+		expect(exportUrl('/x', 'csv', {})).toBe('/x.csv');
 	});
 });
 

@@ -1150,6 +1150,55 @@
         }
       }
     },
+    "/api/courses/{course_id}/summary.xlsx": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Сводная таблица курса в Excel.",
+        "operationId": "course_xlsx",
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "stream_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Какие попытки показывать.",
+              "enum": [
+                "final",
+                "all"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}
+            }
+          }
+        }
+      }
+    },
     "/api/courses/{course_id}/teachers": {
       "get": {
         "tags": [
@@ -2417,6 +2466,55 @@
           "200": {
             "content": {
               "text/csv": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/tests/{test_id}/results.xlsx": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Таблица теста в Excel с теми же фильтрами: листы «Результаты», «Ответы», «Вопросы».",
+        "operationId": "test_xlsx",
+        "parameters": [
+          {
+            "name": "test_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "stream_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Какие попытки показывать.",
+              "enum": [
+                "final",
+                "all"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}
             }
           }
         }

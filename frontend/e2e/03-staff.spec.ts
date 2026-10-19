@@ -8,7 +8,7 @@ interface RunnerAttempt {
 	questions: Array<{ id: string; index: number; options: Array<{ id: string; body: string }> }>;
 }
 
-test('7. результаты: строка студента и CSV с BOM', async ({ page, context, admin }) => {
+test('7. результаты: строка студента, CSV с BOM и Excel', async ({ page, context, admin }) => {
 	const seeded = await seedTest(admin.api, { freeNavigation: true });
 	const student = await enrolledStudent(seeded, unique7());
 
@@ -39,6 +39,13 @@ test('7. результаты: строка студента и CSV с BOM', asy
 	const body = await csv.body();
 	expect([...body.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
 	expect(body.toString('utf8')).toContain(student.user.email);
+
+	const xlsxHref = await page.getByRole('link', { name: /Скачать Excel/ }).getAttribute('href');
+	expect(xlsxHref).toMatch(new RegExp(`^/api/tests/${seeded.testId}/results\\.xlsx`));
+	const xlsx = await admin.api.raw('GET', xlsxHref!);
+	expect(xlsx.status()).toBe(200);
+	expect(xlsx.headers()['content-type']).toContain('spreadsheetml');
+	expect((await xlsx.body()).subarray(0, 2).toString('latin1')).toBe('PK');
 	await student.api.dispose();
 });
 

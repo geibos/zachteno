@@ -10,7 +10,7 @@
 	import ResultsTable from '$lib/components/reports/ResultsTable.svelte';
 	import StatsView from '$lib/components/reports/StatsView.svelte';
 	import AttemptDetailsDialog from '$lib/components/reports/AttemptDetailsDialog.svelte';
-	import { csvUrl, type Mode } from '$lib/components/reports/table';
+	import type { Mode } from '$lib/components/reports/table';
 	import { api, unwrap } from '$lib/api/client';
 	import { Resource } from '$lib/resource.svelte';
 	import { count } from '$lib/format';
@@ -57,7 +57,6 @@
 	});
 
 	const streams = $derived((courseStreams.data ?? []).map((stream) => ({ id: stream.stream_id, name: stream.name })));
-	const csvHref = $derived(csvUrl(`/api/tests/${testId}/results.csv`, { stream_id: streamId, mode }));
 </script>
 
 <svelte:head>
@@ -72,7 +71,13 @@
 				back={{ href: `/tests/${testId}`, label: 'К тесту' }}
 			/>
 
-			<ReportFilters {streams} bind:streamId bind:mode csvHref={tab === 'results' ? csvHref : undefined} csvName="results.csv" />
+			<ReportFilters
+				{streams}
+				bind:streamId
+				bind:mode
+				exportPath={tab === 'results' ? `/api/tests/${testId}/results` : undefined}
+				exportName="results"
+			/>
 
 			<Tabs.Root bind:value={tab}>
 				<Tabs.List>

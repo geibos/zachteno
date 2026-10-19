@@ -8,7 +8,6 @@
 	import ReportFilters from '$lib/components/reports/ReportFilters.svelte';
 	import SortHeader from '$lib/components/reports/SortHeader.svelte';
 	import {
-		csvUrl,
 		nextSort,
 		sortSummaryRows,
 		type Mode,
@@ -53,8 +52,6 @@
 
 	const streams = $derived((courseStreams.data ?? []).map((stream) => ({ id: stream.stream_id, name: stream.name })));
 
-	const csvHref = $derived(csvUrl(`/api/courses/${courseId}/summary.csv`, { stream_id: streamId, mode }));
-
 	function cellOf(cells: SummaryCell[], testId: string): SummaryCell | undefined {
 		return cells.find((cell) => cell.test_id === testId);
 	}
@@ -73,7 +70,7 @@
 				back={{ href: `/courses/${courseId}`, label: 'К курсу' }}
 			/>
 
-			<ReportFilters {streams} bind:streamId bind:mode {csvHref} csvName="summary.csv" />
+			<ReportFilters {streams} bind:streamId bind:mode exportPath={`/api/courses/${courseId}/summary`} exportName="summary" />
 
 			<LoadState resource={summary}>
 				{#snippet children(data)}

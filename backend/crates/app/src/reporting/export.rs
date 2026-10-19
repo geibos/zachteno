@@ -1,4 +1,8 @@
-//! Выгрузка в CSV для Excel с русской локалью (spec results-reporting, «Экспорт в CSV»).
+//! Выгрузка в Excel и в CSV для Excel с русской локалью
+//! (spec results-reporting, «Экспорт в Excel», «Экспорт в CSV»).
+
+mod sheets;
+mod xlsx;
 
 use std::iter::once;
 
@@ -15,9 +19,10 @@ use crate::auth::session::CurrentUser;
 use crate::clock::MSK_OFFSET_HOURS;
 use crate::error::{ApiResult, AppError};
 use crate::http::extract::ClientIp;
-use crate::reporting::data::{Cell, ResultsQuery};
-use crate::reporting::tables::{self, CourseSummaryTable, ResultsTable, TableRow};
+use crate::reporting::data::ResultsQuery;
+use crate::reporting::tables;
 use crate::state::AppState;
+use sheets::{Datum, Sheet};
 
 #[cfg(test)]
 mod tests;
@@ -34,94 +39,36 @@ pub(crate) fn neutralize(cell: &str) -> String {
     }
 }
 
-/// CSV из строк: разделитель `;`, BOM в начале.
-pub(crate) fn to_csv(records: &[Vec<String>]) -> ApiResult<Vec<u8>> {
+/// CSV из первого листа: разделитель `;`, BOM в начале, дроби с запятой.
+pub(crate) fn to_csv(sheet: &Sheet) -> ApiResult<Vec<u8>> {
     let mut writer = csv::WriterBuilder::new().delimiter(b';').from_writer(BOM.to_vec());
-    for record in records {
-        writer
-            .write_record(record.iter().map(|cell| neutralize(cell)))
-            .map_err(|error| AppError::Internal(error.into()))?;
+    let header = sheet.header.iter().map(|title| neutralize(title));
+    let rows = sheet.rows.iter().map(|row| row.iter().map(csv_cell).collect::<Vec<_>>());
+    for record in once(header.collect()).chain(rows) {
+        writer.write_record(&record).map_err(|error| AppError::Internal(error.into()))?;
     }
     writer.into_inner().map_err(|error| AppError::Internal(anyhow::anyhow!("{error}")))
 }
 
-/// Постоянные столбцы выгрузки теста.
-const TEST_HEADER: [&str; 13] = [
-    "Студент",
-    "Email",
-    "Поток",
-    "Попытка",
-    "Начало (МСК)",
-    "Сдача (МСК)",
-    "Длительность, мин",
-    "Как сдана",
-    "Балл",
-    "Максимум",
-    "Процент",
-    "Итог",
-    "Итог, %",
-];
-
-fn test_records(table: &ResultsTable) -> Vec<Vec<String>> {
-    let mut header = TEST_HEADER.into_iter().map(str::to_owned).collect::<Vec<_>>();
-    header.extend(table.columns.iter().map(|column| format!("В{}", column.number)));
-    once(header).chain(table.rows.iter().map(test_record)).collect()
-}
-
-fn test_record(row: &TableRow) -> Vec<String> {
-    let mut cells = vec![
-        row.display_name.clone(),
-        row.email.clone(),
-        row.stream_name.clone().unwrap_or_default(),
-        row.attempt_number.to_string(),
-        msk(row.started_at),
-        msk(row.submitted_at),
-        row.duration_seconds.checked_div(60).unwrap_or_default().to_string(),
-        row.submit_reason.clone().unwrap_or_default(),
-        row.score.to_string(),
-        row.max_score.to_string(),
-        row.percent.map(|percent| percent.to_string()).unwrap_or_default(),
-        row.final_score.map(|score| score.to_string()).unwrap_or_default(),
-        row.final_percent.map(|percent| percent.to_string()).unwrap_or_default(),
-    ];
-    cells.extend(row.cells.iter().map(answer_text));
-    cells
-}
-
-/// Ответ в ячейке: текст, балл с выбранными вариантами или «—», если вопроса не было.
-fn answer_text(cell: &Cell) -> String {
-    match (&cell.text_answer, cell.in_attempt) {
-        (_, false) => "—".to_owned(),
-        (Some(text), true) => text.clone(),
-        (None, true) => format!(
-            "{} [{}]",
-            cell.score.map(|score| score.to_string()).unwrap_or_default(),
-            cell.selected.join(", ")
-        ),
+/// Ячейка CSV: текст экранируется, числа сервер формирует сам и формулой они не бывают.
+fn csv_cell(datum: &Datum) -> String {
+    match datum {
+        Datum::Text(text) => neutralize(text),
+        Datum::Number(number) | Datum::Percent(number) => {
+            number.normalize().to_string().replace('.', ",")
+        }
+        Datum::Moment(moment) => msk(*moment),
+        Datum::Empty => String::new(),
     }
 }
 
-fn summary_records(summary: &CourseSummaryTable) -> Vec<Vec<String>> {
-    let mut header = vec!["Студент".to_owned(), "Email".to_owned()];
-    header.extend(summary.tests.iter().map(|test| test.title.clone()));
-    let rows = summary.rows.iter().map(|row| {
-        let mut cells = vec![row.display_name.clone(), row.email.clone()];
-        cells.extend(row.cells.iter().map(|cell| match (cell.final_score, cell.max_score) {
-            (Some(score), Some(max)) => cell.final_percent.map_or_else(
-                || format!("{score} / {max}"),
-                |percent| format!("{score} / {max} ({percent} %)"),
-            ),
-            (None, Some(_)) => "скрыт".to_owned(),
-            (_, None) => "нет попыток".to_owned(),
-        }));
-        cells
-    });
-    once(header).chain(rows).collect()
+/// Момент в московском времени.
+fn msk_local(moment: OffsetDateTime) -> OffsetDateTime {
+    moment.to_offset(UtcOffset::from_hms(MSK_OFFSET_HOURS, 0, 0).unwrap_or(UtcOffset::UTC))
 }
 
 fn msk(moment: OffsetDateTime) -> String {
-    let local =
-        moment.to_offset(UtcOffset::from_hms(MSK_OFFSET_HOURS, 0, 0).unwrap_or(UtcOffset::UTC));
+    let local = msk_local(moment);
     format!(
         "{:02}.{:02}.{} {:02}:{:02}",
         local.day(),
@@ -132,17 +79,95 @@ fn msk(moment: OffsetDateTime) -> String {
     )
 }
 
-fn download(bytes: Vec<u8>, filename: &str) -> ApiResult<Response> {
-    let mut response = Response::new(Body::from(bytes));
-    let headers = response.headers_mut();
-    let _type =
-        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
-    let disposition = format!("attachment; filename=\"{filename}\"");
-    let _disposition = headers.insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&disposition).map_err(|error| AppError::Internal(error.into()))?,
-    );
-    Ok(response)
+/// Формат выгрузки.
+#[derive(Debug, Clone, Copy)]
+enum FileKind {
+    Csv,
+    Xlsx,
+}
+
+impl FileKind {
+    /// CSV получает только первый лист, XLSX — все.
+    fn write(self, sheets: &[Sheet]) -> ApiResult<Vec<u8>> {
+        match self {
+            Self::Csv => sheets.first().map_or_else(|| Ok(BOM.to_vec()), to_csv),
+            Self::Xlsx => xlsx::to_xlsx(sheets).map_err(AppError::Internal),
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Csv => "csv",
+            Self::Xlsx => "xlsx",
+        }
+    }
+
+    const fn content_type(self) -> &'static str {
+        match self {
+            Self::Csv => "text/csv; charset=utf-8",
+            Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+    }
+
+    const fn audit_action(self) -> &'static str {
+        match self {
+            Self::Csv => "export.csv",
+            Self::Xlsx => "export.xlsx",
+        }
+    }
+
+    fn download(self, bytes: Vec<u8>, stem: &str) -> ApiResult<Response> {
+        let mut response = Response::new(Body::from(bytes));
+        let headers = response.headers_mut();
+        let _type =
+            headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(self.content_type()));
+        let disposition = format!("attachment; filename=\"{stem}.{}\"", self.extension());
+        let _disposition = headers.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&disposition)
+                .map_err(|error| AppError::Internal(error.into()))?,
+        );
+        Ok(response)
+    }
+}
+
+/// Таблица теста с теми же фильтрами в выбранном формате.
+async fn test_export(
+    state: &AppState,
+    (user, ip): (&CurrentUser, ClientIp),
+    (test_id, kind): (Uuid, FileKind),
+    query: &ResultsQuery,
+) -> ApiResult<Response> {
+    let report = tables::load_visible(state, user, test_id, query).await?;
+    let bytes = kind.write(&sheets::test_sheets(&tables::table(&report)))?;
+    let details = serde_json::json!({ "kind": "test", "stream_id": query.stream_id });
+    AuditEntry::new(kind.audit_action(), "test")
+        .by(Some(user.id), Some(ip.0))
+        .on(test_id)
+        .in_course(report.test.course_id)
+        .with(details)
+        .record(&state.db)
+        .await?;
+    kind.download(bytes, &format!("results-{test_id}"))
+}
+
+/// Сводная таблица курса в выбранном формате.
+async fn course_export(
+    state: &AppState,
+    (user, ip): (&CurrentUser, ClientIp),
+    (course_id, kind): (Uuid, FileKind),
+    query: &ResultsQuery,
+) -> ApiResult<Response> {
+    let _role = access::require_on(&state.db, user, course_id, CourseRole::can_view).await?;
+    let summary = tables::build_summary(state, course_id, query).await?;
+    let bytes = kind.write(&[sheets::summary_sheet(&summary)])?;
+    AuditEntry::new(kind.audit_action(), "course")
+        .by(Some(user.id), Some(ip.0))
+        .on(course_id)
+        .in_course(course_id)
+        .record(&state.db)
+        .await?;
+    kind.download(bytes, &format!("course-{course_id}"))
 }
 
 /// Таблица теста в CSV с теми же фильтрами.
@@ -150,21 +175,23 @@ fn download(bytes: Vec<u8>, filename: &str) -> ApiResult<Response> {
     responses((status = 200, content_type = "text/csv")))]
 pub(crate) async fn test_csv(
     State(state): State<AppState>,
-    (user, ClientIp(ip)): (CurrentUser, ClientIp),
+    (user, ip): (CurrentUser, ClientIp),
     Path(test_id): Path<Uuid>,
     Query(query): Query<ResultsQuery>,
 ) -> ApiResult<Response> {
-    let report = tables::load_visible(&state, &user, test_id, &query).await?;
-    let bytes = to_csv(&test_records(&tables::table(&report)))?;
-    let details = serde_json::json!({ "kind": "test", "stream_id": query.stream_id });
-    AuditEntry::new("export.csv", "test")
-        .by(Some(user.id), Some(ip))
-        .on(test_id)
-        .in_course(report.test.course_id)
-        .with(details)
-        .record(&state.db)
-        .await?;
-    download(bytes, &format!("results-{test_id}.csv"))
+    test_export(&state, (&user, ip), (test_id, FileKind::Csv), &query).await
+}
+
+/// Таблица теста в Excel с теми же фильтрами: листы «Результаты», «Ответы», «Вопросы».
+#[utoipa::path(get, path = "/api/tests/{test_id}/results.xlsx", tag = "reports", params(("test_id" = Uuid, Path), ResultsQuery),
+    responses((status = 200, content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")))]
+pub(crate) async fn test_xlsx(
+    State(state): State<AppState>,
+    (user, ip): (CurrentUser, ClientIp),
+    Path(test_id): Path<Uuid>,
+    Query(query): Query<ResultsQuery>,
+) -> ApiResult<Response> {
+    test_export(&state, (&user, ip), (test_id, FileKind::Xlsx), &query).await
 }
 
 /// Сводная таблица курса в CSV.
@@ -172,18 +199,21 @@ pub(crate) async fn test_csv(
     responses((status = 200, content_type = "text/csv")))]
 pub(crate) async fn course_csv(
     State(state): State<AppState>,
-    (user, ClientIp(ip)): (CurrentUser, ClientIp),
+    (user, ip): (CurrentUser, ClientIp),
     Path(course_id): Path<Uuid>,
     Query(query): Query<ResultsQuery>,
 ) -> ApiResult<Response> {
-    let _role = access::require_on(&state.db, &user, course_id, CourseRole::can_view).await?;
-    let summary = tables::build_summary(&state, course_id, &query).await?;
-    let bytes = to_csv(&summary_records(&summary))?;
-    AuditEntry::new("export.csv", "course")
-        .by(Some(user.id), Some(ip))
-        .on(course_id)
-        .in_course(course_id)
-        .record(&state.db)
-        .await?;
-    download(bytes, &format!("course-{course_id}.csv"))
+    course_export(&state, (&user, ip), (course_id, FileKind::Csv), &query).await
+}
+
+/// Сводная таблица курса в Excel.
+#[utoipa::path(get, path = "/api/courses/{course_id}/summary.xlsx", tag = "reports", params(("course_id" = Uuid, Path), ResultsQuery),
+    responses((status = 200, content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")))]
+pub(crate) async fn course_xlsx(
+    State(state): State<AppState>,
+    (user, ip): (CurrentUser, ClientIp),
+    Path(course_id): Path<Uuid>,
+    Query(query): Query<ResultsQuery>,
+) -> ApiResult<Response> {
+    course_export(&state, (&user, ip), (course_id, FileKind::Xlsx), &query).await
 }
