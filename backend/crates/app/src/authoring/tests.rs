@@ -182,6 +182,15 @@ async fn locked_test_allows_only_title_and_review_changes(db: PgPool) {
         StatusCode::NO_CONTENT,
         "имя и показ можно"
     );
+    settings["copy_policy"] = json!("forbidden");
+    let copy = json!({ "settings": settings });
+    assert_eq!(
+        owner.patch(&format!("/api/tests/{test_id}"), copy).await.0,
+        StatusCode::NO_CONTENT,
+        "запрет копирования можно"
+    );
+    let (_, saved) = owner.get(&format!("/api/tests/{test_id}")).await;
+    assert_eq!(saved["settings"]["copy_policy"], "forbidden", "запрет сохранён");
     settings["attempts_limit"] = json!(5);
     let forbidden = json!({ "settings": settings });
     assert_eq!(
@@ -199,7 +208,7 @@ async fn clone_of_locked_test_is_editable_draft(db: PgPool) {
     let test_id = test_in(&mut owner, &course_id).await;
     let _added = owner.post(&format!("/api/tests/{test_id}/questions"), single(2)).await;
     let _locked =
-        sqlx::query("UPDATE tests SET locked_at = now(), status = 'published' WHERE id = $1::uuid")
+        sqlx::query("UPDATE tests SET locked_at = now(), status = 'published', copy_policy = 'forbidden' WHERE id = $1::uuid")
             .bind(&test_id)
             .execute(&state.db)
             .await
@@ -211,6 +220,7 @@ async fn clone_of_locked_test_is_editable_draft(db: PgPool) {
     assert_eq!(copy["status"], "draft", "черновик");
     assert!(copy["locked_at"].is_null(), "не заблокирован");
     assert_eq!(copy["questions"][0]["options"][2]["is_correct"], true, "содержимое скопировано");
+    assert_eq!(copy["settings"]["copy_policy"], "forbidden", "настройки скопированы");
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]

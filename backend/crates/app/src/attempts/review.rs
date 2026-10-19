@@ -114,6 +114,8 @@ pub(crate) struct ReviewQuestion {
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct ReviewView {
     pub attempt_id: Uuid,
+    /// Запрет выделять и копировать текст (настройка теста).
+    pub forbid_copy: bool,
     pub title: String,
     #[schema(value_type = Option<String>)]
     pub score: Option<Decimal>,
@@ -125,9 +127,9 @@ pub(crate) struct ReviewView {
     #[serde(with = "time::serde::rfc3339::option")]
     pub submitted_at: Option<OffsetDateTime>,
     pub submit_reason: Option<String>,
-    pub availability: ReviewAvailability,
     /// Вопросы — только когда разбор доступен.
     pub questions: Vec<ReviewQuestion>,
+    pub availability: ReviewAvailability,
 }
 
 #[derive(FromRow)]
@@ -147,22 +149,22 @@ pub(crate) async fn get_review(
     Path(attempt_id): Path<Uuid>,
 ) -> ApiResult<Json<ReviewView>> {
     let mut connection = state.db.acquire().await?;
-    let attempt = own_attempt(&mut connection, &user, attempt_id, ReadMode::Plain).await?;
-    ensure_submitted(&attempt)?;
+    let attempt =
+        submitted(own_attempt(&mut connection, &user, attempt_id, ReadMode::Plain).await?)?;
     let test = model::load_test(&mut *connection, attempt.test_id).await?;
     let available = availability(&mut connection, &test, &attempt, state.clock.now()).await?;
-    let questions = review_questions(&mut connection, &attempt, &available).await?;
     let score = attempt.score.filter(|_| available.available);
     Ok(Json(ReviewView {
         attempt_id,
+        forbid_copy: test.forbids_copy(),
         title: test.title,
         score: score.map(|shown| shown.normalize()),
         max_score: attempt.max_score.normalize(),
         percent: shown_percent(score, attempt.max_score),
         submitted_at: attempt.submitted_at,
         submit_reason: attempt.submit_reason.clone(),
+        questions: review_questions(&mut connection, &attempt, &available).await?,
         availability: available,
-        questions,
     }))
 }
 
@@ -171,11 +173,12 @@ fn shown_percent(score: Option<Decimal>, max_score: Decimal) -> Option<Decimal> 
     scoring::percent(score?, max_score).map(|percent| percent.normalize())
 }
 
-fn ensure_submitted(attempt: &AttemptRow) -> ApiResult<()> {
+/// Сданная попытка; несданная — конфликт.
+fn submitted(attempt: AttemptRow) -> ApiResult<AttemptRow> {
     if attempt.submitted_at.is_none() {
         return Err(AppError::Conflict("Попытка ещё не сдана".to_owned()));
     }
-    Ok(())
+    Ok(attempt)
 }
 
 /// Вопросы разбора; пусто, пока разбор недоступен.

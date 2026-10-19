@@ -16,7 +16,7 @@
 
 	/**
 	 * Настройки теста. `locked` — тест заблокирован: менять можно только
-	 * политику показа результатов (spec course-authoring).
+	 * политику показа результатов и запрет копирования (spec course-authoring).
 	 */
 	let {
 		testId,
@@ -50,6 +50,7 @@
 	let reviewPolicy = $state<Schema<'ReviewMode'>>('after_submit');
 	let reviewNotBefore = $state<string | null>(null);
 	let finalPolicy = $state<Schema<'FinalScorePolicy'>>('best');
+	let forbidCopy = $state(false);
 
 	function reset(source: Settings): void {
 		unlimitedAttempts = source.attempts_limit == null;
@@ -64,6 +65,7 @@
 		reviewPolicy = source.review_policy;
 		reviewNotBefore = source.review_not_before ?? null;
 		finalPolicy = source.final_policy;
+		forbidCopy = source.copy_policy === 'forbidden';
 	}
 
 	$effect.pre(() => {
@@ -95,11 +97,13 @@
 
 	function build(): Settings {
 		if (locked) {
-			// В заблокированном тесте отправляем прежние значения, меняется только показ результатов.
+			// В заблокированном тесте отправляем прежние значения, меняются только показ результатов
+			// и запрет копирования.
 			return {
 				...settings,
 				review_policy: reviewPolicy,
-				review_not_before: reviewPolicy === 'after_close' ? reviewNotBefore : null
+				review_not_before: reviewPolicy === 'after_close' ? reviewNotBefore : null,
+				copy_policy: copyPolicy()
 			};
 		}
 		return {
@@ -111,8 +115,13 @@
 			shuffle_options: shuffleOptions,
 			review_policy: reviewPolicy,
 			review_not_before: reviewPolicy === 'after_close' ? reviewNotBefore : null,
-			final_policy: finalPolicy
+			final_policy: finalPolicy,
+			copy_policy: copyPolicy()
 		};
+	}
+
+	function copyPolicy(): Schema<'CopyPolicy'> {
+		return forbidCopy ? 'forbidden' : 'allowed';
 	}
 
 	async function save(event: SubmitEvent): Promise<void> {
@@ -141,7 +150,7 @@
 	<Card.Header>
 		<Card.Title>Настройки</Card.Title>
 		{#if locked && canEdit}
-			<Card.Description>Тест заблокирован: сейчас можно менять только показ результатов.</Card.Description>
+			<Card.Description>Тест заблокирован: сейчас можно менять только показ результатов и запрет копирования.</Card.Description>
 		{/if}
 	</Card.Header>
 	<Card.Content>
@@ -240,6 +249,17 @@
 					<span>
 						<span class="font-medium">Перемешивать варианты ответа</span>
 						<span class="text-muted-foreground block text-xs">Закреплённые варианты остаются на месте.</span>
+					</span>
+				</label>
+				<label class="flex items-start gap-3 text-sm">
+					<Checkbox bind:checked={forbidCopy} disabled={readonlyReview} class="mt-0.5" />
+					<span>
+						<span class="font-medium">Запретить копирование текста</span>
+						<span class="text-muted-foreground block text-xs">
+							Студент не сможет выделить и скопировать вопросы и варианты при прохождении и в разборе. В поле
+							свободного ответа копирование и вставка работают. Мешает обычному копированию, но не защищает
+							от инструментов разработчика браузера.
+						</span>
 					</span>
 				</label>
 			</div>

@@ -73,6 +73,40 @@ async fn random_sample_takes_requested_number_of_questions(db: PgPool) {
     let mut room = Classroom::new(&state, 30, json!({ "questions_per_attempt": 20 })).await;
     let attempt = room.start().await;
     assert_eq!(attempt["questions"].as_array().map(Vec::len), Some(20), "20 из 30");
+    assert_eq!(attempt["question_count"], 20, "в свободном режиме видны все вопросы попытки");
+    assert_eq!(attempt["forbid_copy"], false, "копирование по умолчанию не запрещено");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn sequential_mode_sends_only_current_question(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 3, json!({ "free_navigation": false })).await;
+    let attempt = room.start().await;
+    assert_eq!(attempt["questions"].as_array().map(Vec::len), Some(1), "один вопрос: {attempt}");
+    assert_eq!(attempt["questions"][0]["index"], 0, "первый");
+    assert_eq!(attempt["question_count"], 3, "число вопросов известно");
+    let (path, body) = testing::answer_body(&attempt, 0, 1, 1);
+    let _saved = room.student.put(&path, body).await;
+    let (status, moved) =
+        room.student.post(&attempt_path(&attempt, "/navigate"), json!({ "to_index": 1 })).await;
+    assert_eq!(status, StatusCode::OK, "переход отдаёт вид попытки: {moved}");
+    assert_eq!(moved["questions"].as_array().map(Vec::len), Some(1), "снова один вопрос");
+    assert_eq!(moved["questions"][0]["index"], 1, "следующий");
+    assert_ne!(moved["questions"][0]["id"], attempt["questions"][0]["id"], "другой вопрос");
+    assert_eq!(moved["answers"], json!([]), "ответов на пройденный вопрос нет");
+    let (_, reopened) = room.student.get(&attempt_path(&attempt, "")).await;
+    assert_eq!(reopened["questions"], moved["questions"], "после перезагрузки тот же вопрос");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn forbid_copy_reaches_attempt_and_review(db: PgPool) {
+    let state = testing::state(db);
+    let mut room = Classroom::new(&state, 1, json!({ "copy_policy": "forbidden" })).await;
+    let attempt = room.start().await;
+    assert_eq!(attempt["forbid_copy"], true, "в попытке: {attempt}");
+    let _done = room.student.post(&attempt_path(&attempt, "/submit"), json!({})).await;
+    let (_, review) = room.student.get(&attempt_path(&attempt, "/review")).await;
+    assert_eq!(review["forbid_copy"], true, "в разборе: {review}");
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -129,7 +163,7 @@ async fn sequential_mode_forbids_going_back_even_via_api(db: PgPool) {
     let _saved = room.student.put(&path, body).await;
     assert_eq!(
         room.student.post(&navigate, json!({ "to_index": 1 })).await.0,
-        StatusCode::NO_CONTENT,
+        StatusCode::OK,
         "с ответом — дальше"
     );
     let (back_path, change) = testing::answer_body(&attempt, 0, 0, 2);

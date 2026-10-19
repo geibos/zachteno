@@ -175,8 +175,14 @@ pub(crate) struct AttemptView {
     #[serde(with = "time::serde::rfc3339::option")]
     pub submitted_at: Option<OffsetDateTime>,
     pub current_index: i32,
+    /// Вопросы, которые видит студент: в последовательном режиме только текущий.
     pub questions: Vec<RunnerQuestion>,
+    /// Сколько всего вопросов в попытке.
+    pub question_count: usize,
+    /// Ответы на показанные вопросы.
     pub answers: Vec<SavedAnswer>,
+    /// Запрет выделять и копировать текст (настройка теста).
+    pub forbid_copy: bool,
 }
 
 /// Попытка с вопросами в порядке раскладки, без признаков правильности.
@@ -200,22 +206,58 @@ async fn attempt_view(
 ) -> ApiResult<AttemptView> {
     let attempt = own_attempt(connection, user, attempt_id, ReadMode::Plain).await?;
     let test = model::load_test(&mut *connection, attempt.test_id).await?;
-    let questions = model::load_questions_in(connection, attempt.test_id).await?;
-    let answers = saved_answers(connection, attempt_id).await?;
-    let navigation = navigation_of(&test);
-    Ok(AttemptView {
-        id: attempt.id,
-        test_id: attempt.test_id,
-        title: test.title,
-        navigation,
-        is_preview: attempt.is_preview,
-        server_now: clock.now(),
-        deadline_at: attempt.deadline_at,
-        submitted_at: attempt.submitted_at,
-        current_index: attempt.current_index,
-        questions: runner_questions(&attempt.layout.0, &questions),
-        answers,
-    })
+    let details = model::load_questions_in(connection, attempt.test_id).await?;
+    let questions = shown_questions(&attempt, &test, &details);
+    let saved = saved_answers(connection, attempt_id).await?;
+    let answers = saved
+        .into_iter()
+        .filter(|answer| questions.iter().any(|question| question.id == answer.question_id))
+        .collect();
+    Ok(AttemptView::new(&attempt, test, (questions, answers), clock.now()))
+}
+
+/// Вопросы, которые видит студент, — те, на которые сейчас можно ответить: следующие вопросы
+/// последовательного режима не уходят клиенту заранее.
+fn shown_questions(
+    attempt: &AttemptRow,
+    test: &TestRow,
+    details: &[QuestionDetail],
+) -> Vec<RunnerQuestion> {
+    let cursor = attempt.cursor(test);
+    runner_questions(&attempt.layout.0, details)
+        .into_iter()
+        .filter(|question| cursor.can_answer(question.index))
+        .collect()
+}
+
+/// Показанные вопросы и ответы на них.
+type Shown = (Vec<RunnerQuestion>, Vec<SavedAnswer>);
+
+impl AttemptView {
+    fn new(
+        attempt: &AttemptRow,
+        test: TestRow,
+        (questions, answers): Shown,
+        server_now: OffsetDateTime,
+    ) -> Self {
+        let navigation = navigation_of(&test);
+        let forbid_copy = test.forbids_copy();
+        Self {
+            id: attempt.id,
+            test_id: attempt.test_id,
+            title: test.title,
+            navigation,
+            is_preview: attempt.is_preview,
+            server_now,
+            deadline_at: attempt.deadline_at,
+            submitted_at: attempt.submitted_at,
+            current_index: attempt.current_index,
+            questions,
+            question_count: attempt.layout.0.len(),
+            answers,
+            forbid_copy,
+        }
+    }
 }
 
 /// cancel-safe: yes — только чтение.
@@ -420,14 +462,15 @@ pub(crate) struct NavigateInput {
 }
 
 /// Переходит к вопросу; в последовательном режиме — только вперёд и только с ответом.
+/// Отдаёт вид попытки после перехода — в последовательном режиме с новым текущим вопросом.
 #[utoipa::path(post, path = "/api/attempts/{attempt_id}/navigate", tag = "attempts", params(("attempt_id" = Uuid, Path)),
-    request_body = NavigateInput, responses((status = 204), (status = 409)))]
+    request_body = NavigateInput, responses((status = 200, body = AttemptView), (status = 409)))]
 pub(crate) async fn navigate(
     State(state): State<AppState>,
     user: CurrentUser,
     Path(attempt_id): Path<Uuid>,
     Json(input): Json<NavigateInput>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<AttemptView>> {
     let now = state.clock.now();
     let mut tx = state.db.begin().await?;
     let attempt = own_attempt(&mut tx, &user, attempt_id, ReadMode::ForUpdate).await?;
@@ -440,7 +483,8 @@ pub(crate) async fn navigate(
     let details = serde_json::json!({ "from": cursor.current_index, "to": input.to_index });
     log_event(&mut tx, attempt_id, ("navigate", None), (details, now)).await?;
     tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
+    let mut connection = state.db.acquire().await?;
+    Ok(Json(attempt_view(&mut connection, &user, attempt_id, &state.clock).await?))
 }
 
 /// Конфликт, если перейти к `to_index` нельзя: нет такого вопроса или последовательный режим

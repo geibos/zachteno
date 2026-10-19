@@ -76,6 +76,28 @@ impl ReviewMode {
     }
 }
 
+/// Можно ли студенту выделять и копировать текст на прохождении и разборе.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CopyPolicy {
+    #[default]
+    Allowed,
+    Forbidden,
+}
+
+impl CopyPolicy {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::Forbidden => "forbidden",
+        }
+    }
+
+    pub(crate) fn parse(name: &str) -> Self {
+        if name == "forbidden" { Self::Forbidden } else { Self::Allowed }
+    }
+}
+
 /// Настройки теста (spec course-authoring, «Настройки теста»).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub(crate) struct TestSettings {
@@ -93,6 +115,8 @@ pub(crate) struct TestSettings {
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub review_not_before: Option<OffsetDateTime>,
     pub final_policy: FinalScorePolicy,
+    #[serde(default)]
+    pub copy_policy: CopyPolicy,
 }
 
 impl Default for TestSettings {
@@ -107,16 +131,19 @@ impl Default for TestSettings {
             review_policy: ReviewMode::AfterSubmit,
             review_not_before: None,
             final_policy: FinalScorePolicy::Best,
+            copy_policy: CopyPolicy::Allowed,
         }
     }
 }
 
 impl TestSettings {
-    /// Совпадают ли настройки, кроме политики показа (её можно менять у заблокированного теста).
-    pub(crate) fn same_except_review(&self, other: &Self) -> bool {
+    /// Совпадают ли настройки, кроме политики показа и запрета копирования (их можно менять
+    /// у заблокированного теста).
+    pub(crate) fn same_except_display(&self, other: &Self) -> bool {
         let strip = |settings: &Self| Self {
             review_policy: ReviewMode::Never,
             review_not_before: None,
+            copy_policy: CopyPolicy::Allowed,
             ..settings.clone()
         };
         strip(self) == strip(other)
@@ -153,13 +180,14 @@ pub(crate) struct TestRow {
     pub review_policy: String,
     pub review_not_before: Option<OffsetDateTime>,
     pub final_policy: String,
+    pub copy_policy: String,
     pub locked_at: Option<OffsetDateTime>,
 }
 
 /// Колонки `TestRow` для SELECT.
 pub(crate) const TEST_COLUMNS: &str = "id, course_id, title, description, status, attempts_limit,
     time_limit_minutes, questions_per_attempt, free_navigation, shuffle_questions, shuffle_options,
-    review_policy, review_not_before, final_policy, locked_at";
+    review_policy, review_not_before, final_policy, copy_policy, locked_at";
 
 impl TestRow {
     pub(crate) fn settings(&self) -> TestSettings {
@@ -174,7 +202,13 @@ impl TestRow {
             review_not_before: self.review_not_before,
             final_policy: FinalScorePolicy::parse(&self.final_policy)
                 .unwrap_or(FinalScorePolicy::Best),
+            copy_policy: CopyPolicy::parse(&self.copy_policy),
         }
+    }
+
+    /// Запрещено ли студенту копировать текст.
+    pub(crate) fn forbids_copy(&self) -> bool {
+        CopyPolicy::parse(&self.copy_policy) == CopyPolicy::Forbidden
     }
 
     pub(crate) fn status(&self) -> TestStatus {

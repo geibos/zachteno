@@ -201,7 +201,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Переходит к вопросу; в последовательном режиме — только вперёд и только с ответом. */
+        /**
+         * Переходит к вопросу; в последовательном режиме — только вперёд и только с ответом.
+         *     Отдаёт вид попытки после перехода — в последовательном режиме с новым текущим вопросом.
+         */
         post: operations["navigate"];
         delete?: never;
         options?: never;
@@ -1305,15 +1308,21 @@ export interface components {
         };
         /** @description Попытка для прохождения. */
         AttemptView: {
+            /** @description Ответы на показанные вопросы. */
             answers: components["schemas"]["SavedAnswer"][];
             /** Format: int32 */
             current_index: number;
             /** Format: date-time */
             deadline_at?: string | null;
+            /** @description Запрет выделять и копировать текст (настройка теста). */
+            forbid_copy: boolean;
             /** Format: uuid */
             id: string;
             is_preview: boolean;
             navigation: components["schemas"]["Navigation"];
+            /** @description Сколько всего вопросов в попытке. */
+            question_count: number;
+            /** @description Вопросы, которые видит студент: в последовательном режиме только текущий. */
             questions: components["schemas"]["RunnerQuestion"][];
             /** Format: date-time */
             server_now: string;
@@ -1409,6 +1418,11 @@ export interface components {
             question_id: string;
             weight: string;
         };
+        /**
+         * @description Можно ли студенту выделять и копировать текст на прохождении и разборе.
+         * @enum {string}
+         */
+        CopyPolicy: "allowed" | "forbidden";
         /** @description Курс целиком: описание, мои права и тесты. */
         CourseDetail: {
             archived: boolean;
@@ -1851,6 +1865,8 @@ export interface components {
             /** Format: uuid */
             attempt_id: string;
             availability: components["schemas"]["ReviewAvailability"];
+            /** @description Запрет выделять и копировать текст (настройка теста). */
+            forbid_copy: boolean;
             max_score: string;
             /** @description Процент от максимума — когда балл виден. */
             percent?: string | null;
@@ -2059,6 +2075,7 @@ export interface components {
              * @description Лимит попыток; `null` — без ограничения.
              */
             attempts_limit?: number | null;
+            copy_policy?: components["schemas"]["CopyPolicy"];
             final_policy: components["schemas"]["FinalScorePolicy"];
             /** @description Возврат и пропуск вопросов (один флаг). */
             free_navigation: boolean;
@@ -2494,11 +2511,13 @@ export interface operations {
             };
         };
         responses: {
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["AttemptView"];
+                };
             };
             409: {
                 headers: {

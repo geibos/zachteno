@@ -110,11 +110,11 @@ pub(crate) async fn copy_test(
     let id: Uuid = sqlx::query_scalar(
         "INSERT INTO tests (course_id, title, description, status, position, attempts_limit, time_limit_minutes,
              questions_per_attempt, free_navigation, shuffle_questions, shuffle_options, review_policy,
-             review_not_before, final_policy)
+             review_not_before, final_policy, copy_policy)
          SELECT $2, title, description, 'draft',
                 coalesce((SELECT max(position) + 1 FROM tests WHERE course_id = $2), 0), attempts_limit,
                 time_limit_minutes, questions_per_attempt, free_navigation, shuffle_questions, shuffle_options,
-                review_policy, review_not_before, final_policy
+                review_policy, review_not_before, final_policy, copy_policy
          FROM tests WHERE id = $1 RETURNING id",
     )
     .bind(test_id)

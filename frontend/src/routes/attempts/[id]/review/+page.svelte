@@ -18,6 +18,8 @@
 	import { Resource } from '$lib/resource.svelte';
 	import { formatDateTime, formatPercent, formatScore } from '$lib/format';
 	import { reviewStatusText, submitReasonText } from '$lib/attempt/review-status';
+	import { noCopy } from '$lib/attempt/no-copy';
+	import { toast } from 'svelte-sonner';
 	import { cn } from '$lib/utils';
 
 	const attemptId = $derived(page.params.id ?? '');
@@ -62,7 +64,13 @@
 
 <RequireAuth>
 	{#snippet children()}
-		<div class="mx-auto grid w-full max-w-3xl grid-cols-1 gap-6 px-4 py-8 sm:px-6">
+		<div
+			class="mx-auto grid w-full max-w-3xl grid-cols-1 gap-6 px-4 py-8 sm:px-6"
+			use:noCopy={{
+				enabled: review.data?.forbid_copy ?? false,
+				onblocked: () => toast.info('Копирование в этом тесте отключено', { id: 'no-copy' })
+			}}
+		>
 			{#if notSubmitted && review.data === null}
 				<PageHeader title="Попытка сдаётся" back={{ href: '/', label: 'Мои тесты' }} />
 				<Alert.Root>

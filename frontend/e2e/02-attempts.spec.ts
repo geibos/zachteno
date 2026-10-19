@@ -58,6 +58,13 @@ test('5. последовательный режим: «Далее» тольк�
 	const student = await enrolledStudent(seeded, 'Студент По Порядку');
 	await signIn(context, page, student);
 	const attemptId = await startAttempt(page, seeded.testId);
+	// В последовательном режиме сервер отдаёт только текущий вопрос — первый берём до перехода.
+	const attempt = await student.api.call<{ questions: Array<{ id: string; index: number }> }>(
+		'GET',
+		`/api/attempts/${attemptId}`
+	);
+	const firstQuestion = attempt.questions.find((question) => question.index === 0);
+	expect(firstQuestion).toBeDefined();
 
 	const next = page.getByRole('button', { name: 'Далее' });
 	await expect(next).toBeDisabled();
@@ -69,12 +76,6 @@ test('5. последовательный режим: «Далее» тольк�
 	await expect(page.getByRole('button', { name: 'Назад' })).toHaveCount(0);
 
 	// Прямой запрос к API тоже не даёт изменить ответ на пройденный вопрос.
-	const attempt = await student.api.call<{ questions: Array<{ id: string; index: number }> }>(
-		'GET',
-		`/api/attempts/${attemptId}`
-	);
-	const firstQuestion = [...attempt.questions].sort((a, b) => a.index - b.index)[0];
-	expect(firstQuestion).toBeDefined();
 	const back = await student.api.raw('PUT', `/api/attempts/${attemptId}/answers/${firstQuestion!.id}`, {
 		selected_option_ids: [],
 		text: null,

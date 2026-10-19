@@ -24,15 +24,18 @@
 	import { count, formatDuration } from '$lib/format';
 	import { cn } from '$lib/utils';
 	import { sendSignals, TypingRecorder, typingRhythm } from '$lib/signals';
+	import { noCopy } from '$lib/attempt/no-copy';
 
 	let { initial }: { initial: Schema<'AttemptView'> } = $props();
 
 	// Попытка не меняет состав и порядок вопросов — берём их один раз
 	// (страница пересоздаёт раннер через {#key} при смене попытки).
+	// В последовательном режиме сервер отдаёт только текущий вопрос: следующий приходит после перехода.
 	const view = untrack(() => initial);
 	const attemptId = view.id;
-	const questions = [...view.questions].sort((a, b) => a.index - b.index);
-	const total = questions.length;
+	const byIndex = (list: Schema<'RunnerQuestion'>[]) => [...list].sort((a, b) => a.index - b.index);
+	let questions = $state(byIndex(view.questions));
+	const total = view.question_count;
 	const sequential = view.navigation === 'sequential';
 
 	let answers = $state<Record<string, LocalAnswer>>(fromSaved(view.answers));
@@ -47,7 +50,7 @@
 
 	let offset = clockOffset(view.server_now, Date.now());
 	const remaining = $derived(remainingMs(view.deadline_at, offset, now));
-	const question = $derived(questions[current]);
+	const question = $derived(questions.find((q) => q.index === current));
 	const unanswered = $derived(questions.filter((q) => !isAnswered(q.choice, answers[q.id])));
 	const timeOver = $derived(remaining === 0);
 
@@ -95,7 +98,10 @@
 				await goto(`/attempts/${attemptId}/review`, { replaceState: true });
 				return;
 			}
-			if (sequential) current = Math.min(fresh.current_index, total - 1);
+			if (sequential) {
+				questions = byIndex(fresh.questions);
+				current = Math.min(fresh.current_index, total - 1);
+			}
 		} catch {
 			// нет связи — покажем исходное сообщение
 		}
@@ -171,13 +177,14 @@
 				toast.error('Ответ ещё не сохранён. Проверьте подключение и попробуйте снова.');
 				return;
 			}
-			await unwrap(
+			const moved = await unwrap(
 				api.POST('/api/attempts/{attempt_id}/navigate', {
 					params: { path: { attempt_id: attemptId } },
 					body: { to_index: current + 1 }
 				})
 			);
-			current += 1;
+			questions = byIndex(moved.questions);
+			current = moved.current_index;
 			window.scrollTo({ top: 0, behavior: 'smooth' });
 		} catch (error) {
 			toast.error(errorMessage(error));
@@ -250,6 +257,10 @@
 <div
 	class="mx-auto grid w-full max-w-3xl grid-cols-1 gap-4 px-4 pt-4 pb-24 sm:px-6"
 	use:typingRhythm={{ recorder: typing, accept: isFreeTextField }}
+	use:noCopy={{
+		enabled: view.forbid_copy,
+		onblocked: () => toast.info('Копирование в этом тесте отключено', { id: 'no-copy' })
+	}}
 >
 	{#if view.is_preview}
 		<Alert.Root class="border-primary/30 bg-primary/5">

@@ -398,7 +398,7 @@
         "tags": [
           "attempts"
         ],
-        "summary": "Переходит к вопросу; в последовательном режиме — только вперёд и только с ответом.",
+        "summary": "Переходит к вопросу; в последовательном режиме — только вперёд и только с ответом.\nОтдаёт вид попытки после перехода — в последовательном режиме с новым текущим вопросом.",
         "operationId": "navigate",
         "parameters": [
           {
@@ -422,7 +422,15 @@
           "required": true
         },
         "responses": {
-          "204": {},
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptView"
+                }
+              }
+            }
+          },
           "409": {}
         }
       }
@@ -2854,14 +2862,17 @@
           "server_now",
           "current_index",
           "questions",
-          "answers"
+          "question_count",
+          "answers",
+          "forbid_copy"
         ],
         "properties": {
           "answers": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SavedAnswer"
-            }
+            },
+            "description": "Ответы на показанные вопросы."
           },
           "current_index": {
             "type": "integer",
@@ -2874,6 +2885,10 @@
             ],
             "format": "date-time"
           },
+          "forbid_copy": {
+            "type": "boolean",
+            "description": "Запрет выделять и копировать текст (настройка теста)."
+          },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -2884,11 +2899,17 @@
           "navigation": {
             "$ref": "#/components/schemas/Navigation"
           },
+          "question_count": {
+            "type": "integer",
+            "description": "Сколько всего вопросов в попытке.",
+            "minimum": 0
+          },
           "questions": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/RunnerQuestion"
-            }
+            },
+            "description": "Вопросы, которые видит студент: в последовательном режиме только текущий."
           },
           "server_now": {
             "type": "string",
@@ -3177,6 +3198,14 @@
             "type": "string"
           }
         }
+      },
+      "CopyPolicy": {
+        "type": "string",
+        "description": "Можно ли студенту выделять и копировать текст на прохождении и разборе.",
+        "enum": [
+          "allowed",
+          "forbidden"
+        ]
       },
       "CourseDetail": {
         "type": "object",
@@ -4609,10 +4638,11 @@
         "description": "Разбор попытки.",
         "required": [
           "attempt_id",
+          "forbid_copy",
           "title",
           "max_score",
-          "availability",
-          "questions"
+          "questions",
+          "availability"
         ],
         "properties": {
           "attempt_id": {
@@ -4621,6 +4651,10 @@
           },
           "availability": {
             "$ref": "#/components/schemas/ReviewAvailability"
+          },
+          "forbid_copy": {
+            "type": "boolean",
+            "description": "Запрет выделять и копировать текст (настройка теста)."
           },
           "max_score": {
             "type": "string"
@@ -5329,6 +5363,9 @@
             ],
             "format": "int32",
             "description": "Лимит попыток; `null` — без ограничения."
+          },
+          "copy_policy": {
+            "$ref": "#/components/schemas/CopyPolicy"
           },
           "final_policy": {
             "$ref": "#/components/schemas/FinalScorePolicy"

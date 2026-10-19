@@ -150,11 +150,11 @@ pub(crate) async fn update_test(
 }
 
 /// Новые настройки (или прежние, если не переданы), проверенные; у заблокированного теста
-/// меняться может только политика показа результатов.
+/// меняться могут только политика показа результатов и запрет копирования.
 fn checked_settings(test: &TestRow, requested: Option<TestSettings>) -> ApiResult<TestSettings> {
     let settings = requested.unwrap_or_else(|| test.settings());
     settings.validate()?;
-    if test.locked_at.is_some() && !settings.same_except_review(&test.settings()) {
+    if test.locked_at.is_some() && !settings.same_except_display(&test.settings()) {
         return Err(AppError::Conflict(LOCKED.to_owned()));
     }
     Ok(settings)
@@ -170,7 +170,7 @@ struct TestChange<'patch> {
 const UPDATE_TEST: &str = "UPDATE tests SET title = coalesce($2, title), description = coalesce($3, description),
             attempts_limit = $4, time_limit_minutes = $5, questions_per_attempt = $6, free_navigation = $7,
             shuffle_questions = $8, shuffle_options = $9, review_policy = $10, review_not_before = $11,
-            final_policy = $12, updated_at = $13
+            final_policy = $12, copy_policy = $13, updated_at = $14
          WHERE id = $1";
 
 /// cancel-safe: yes — в транзакции вызывающего.
@@ -180,20 +180,20 @@ async fn save_test(
     change: &TestChange<'_>,
     now: OffsetDateTime,
 ) -> ApiResult<()> {
-    let settings = &change.settings;
     let _updated = sqlx::query(UPDATE_TEST)
         .bind(test_id)
         .bind(change.title)
         .bind(change.description.map(str::trim))
-        .bind(settings.attempts_limit)
-        .bind(settings.time_limit_minutes)
-        .bind(settings.questions_per_attempt)
-        .bind(settings.free_navigation)
-        .bind(settings.shuffle_questions)
-        .bind(settings.shuffle_options)
-        .bind(settings.review_policy.as_str())
-        .bind(settings.review_not_before)
-        .bind(settings.final_policy.as_str())
+        .bind(change.settings.attempts_limit)
+        .bind(change.settings.time_limit_minutes)
+        .bind(change.settings.questions_per_attempt)
+        .bind(change.settings.free_navigation)
+        .bind(change.settings.shuffle_questions)
+        .bind(change.settings.shuffle_options)
+        .bind(change.settings.review_policy.as_str())
+        .bind(change.settings.review_not_before)
+        .bind(change.settings.final_policy.as_str())
+        .bind(change.settings.copy_policy.as_str())
         .bind(now)
         .execute(&mut *tx)
         .await?;
