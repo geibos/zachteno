@@ -1368,6 +1368,8 @@ export interface components {
         ColumnHeader: {
             body: string;
             free_text: boolean;
+            /** @description Балл за полностью верный ответ на вопрос. */
+            max_score: string;
             number: number;
             /** Format: uuid */
             question_id: string;
@@ -1470,6 +1472,8 @@ export interface components {
             closes_at?: string | null;
             course_title: string;
             description: string;
+            /** @description Итоговый процент — при тех же условиях, что и итоговый балл. */
+            final_percent?: string | null;
             /** @description Итоговый балл — если результаты уже можно смотреть. */
             final_score?: string | null;
             free_navigation: boolean;
@@ -1731,7 +1735,7 @@ export interface components {
          * @description Тип вопроса вместе с режимом оценки множественного выбора.
          * @enum {string}
          */
-        QuestionKind: "single" | "multiple_all" | "multiple_any" | "free_text";
+        QuestionKind: "single" | "multiple_all" | "multiple_any" | "multiple_each" | "multiple_fraction" | "free_text";
         /** @description Новый порядок вопросов. */
         QuestionOrder: {
             question_ids: string[];
@@ -1800,6 +1804,8 @@ export interface components {
             choice: components["schemas"]["Choice"];
             image?: components["schemas"]["ImageRef"] | null;
             index: number;
+            /** @description Балл за полностью верный ответ на этот вопрос. */
+            max_score: string;
             options: components["schemas"]["ReviewOption"][];
             /** @description Балл; `null` — свободный ответ («не оценивается»). */
             score?: string | null;
@@ -1812,6 +1818,8 @@ export interface components {
             attempt_id: string;
             availability: components["schemas"]["ReviewAvailability"];
             max_score: string;
+            /** @description Процент от максимума — когда балл виден. */
+            percent?: string | null;
             /** @description Вопросы — только когда разбор доступен. */
             questions: components["schemas"]["ReviewQuestion"][];
             score?: string | null;
@@ -1846,6 +1854,8 @@ export interface components {
             image?: components["schemas"]["ImageRef"] | null;
             index: number;
             options: components["schemas"]["RunnerOption"][];
+            /** @description Засчитывается частично. Говорит только о способе оценки, не о правильности. */
+            partial_credit: boolean;
         };
         /** @description Сохранённый ответ. */
         SavedAnswer: {
@@ -1932,6 +1942,7 @@ export interface components {
         SummaryCell: {
             /** Format: int64 */
             attempts: number;
+            final_percent?: string | null;
             final_score?: string | null;
             max_score?: string | null;
             /** Format: uuid */
@@ -1963,8 +1974,11 @@ export interface components {
             /** Format: int64 */
             duration_seconds: number;
             email: string;
+            final_percent?: string | null;
             final_score?: string | null;
             max_score: string;
+            /** @description Процент попытки от её максимума. */
+            percent?: string | null;
             removed: boolean;
             score: string;
             /** Format: date-time */

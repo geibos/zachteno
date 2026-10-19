@@ -46,7 +46,7 @@ pub(crate) fn to_csv(records: &[Vec<String>]) -> ApiResult<Vec<u8>> {
 }
 
 /// Постоянные столбцы выгрузки теста.
-const TEST_HEADER: [&str; 11] = [
+const TEST_HEADER: [&str; 13] = [
     "Студент",
     "Email",
     "Поток",
@@ -57,7 +57,9 @@ const TEST_HEADER: [&str; 11] = [
     "Как сдана",
     "Балл",
     "Максимум",
+    "Процент",
     "Итог",
+    "Итог, %",
 ];
 
 fn test_records(table: &ResultsTable) -> Vec<Vec<String>> {
@@ -78,7 +80,9 @@ fn test_record(row: &TableRow) -> Vec<String> {
         row.submit_reason.clone().unwrap_or_default(),
         row.score.to_string(),
         row.max_score.to_string(),
+        row.percent.map(|percent| percent.to_string()).unwrap_or_default(),
         row.final_score.map(|score| score.to_string()).unwrap_or_default(),
+        row.final_percent.map(|percent| percent.to_string()).unwrap_or_default(),
     ];
     cells.extend(row.cells.iter().map(answer_text));
     cells
@@ -103,7 +107,10 @@ fn summary_records(summary: &CourseSummaryTable) -> Vec<Vec<String>> {
     let rows = summary.rows.iter().map(|row| {
         let mut cells = vec![row.display_name.clone(), row.email.clone()];
         cells.extend(row.cells.iter().map(|cell| match (cell.final_score, cell.max_score) {
-            (Some(score), Some(max)) => format!("{score} / {max}"),
+            (Some(score), Some(max)) => cell.final_percent.map_or_else(
+                || format!("{score} / {max}"),
+                |percent| format!("{score} / {max} ({percent} %)"),
+            ),
             (None, Some(_)) => "скрыт".to_owned(),
             (_, None) => "нет попыток".to_owned(),
         }));

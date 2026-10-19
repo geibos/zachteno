@@ -7,7 +7,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import type { Schema } from '$lib/api/client';
-	import { count, formatDateTime, formatScore } from '$lib/format';
+	import { count, formatDateTime, formatPercent, formatScore } from '$lib/format';
 	import { reviewStatusText } from '$lib/attempt/review-status';
 
 	type Kind = 'available' | 'scheduled' | 'completed' | 'closed';
@@ -58,7 +58,12 @@
 		{#if kind === 'completed'}
 			<div class="bg-muted/60 grid gap-1 rounded-lg p-3 text-sm">
 				{#if test.final_score !== null && test.final_score !== undefined}
-					<p>Итоговый балл: <span class="text-base font-semibold">{formatScore(test.final_score)}</span></p>
+					<p>
+						Итоговый балл: <span class="text-base font-semibold">{formatScore(test.final_score)}</span>
+						{#if formatPercent(test.final_percent)}
+							<span class="text-muted-foreground">· {formatPercent(test.final_percent)}</span>
+						{/if}
+					</p>
 				{/if}
 				<p class={test.review?.available ? 'text-foreground' : 'text-muted-foreground'}>
 					{reviewStatusText(test.review, test.is_open)}

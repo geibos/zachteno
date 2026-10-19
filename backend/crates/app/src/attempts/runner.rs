@@ -120,7 +120,10 @@ impl From<QuestionKind> for Choice {
     fn from(kind: QuestionKind) -> Self {
         match kind {
             QuestionKind::Single => Self::Single,
-            QuestionKind::MultipleAll | QuestionKind::MultipleAny => Self::Multiple,
+            QuestionKind::MultipleAll
+            | QuestionKind::MultipleAny
+            | QuestionKind::MultipleEach
+            | QuestionKind::MultipleFraction => Self::Multiple,
             QuestionKind::FreeText => Self::FreeText,
         }
     }
@@ -150,6 +153,8 @@ pub(crate) struct RunnerQuestion {
     pub id: Uuid,
     pub index: usize,
     pub choice: Choice,
+    /// Засчитывается частично. Говорит только о способе оценки, не о правильности.
+    pub partial_credit: bool,
     pub body: String,
     pub image: Option<ImageRef>,
     pub options: Vec<RunnerOption>,
@@ -249,6 +254,7 @@ fn runner_questions(
             id: question.id,
             index,
             choice: Choice::from(question.kind),
+            partial_credit: question.kind.gives_partial_credit(),
             body: question.body.clone(),
             image: question.image.clone(),
             options: runner_options(slot, question),

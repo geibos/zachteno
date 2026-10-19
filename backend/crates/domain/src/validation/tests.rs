@@ -50,6 +50,30 @@ fn multiple_choice_needs_two_options() {
 }
 
 #[test]
+fn partial_credit_modes_follow_multiple_choice_rules() {
+    for kind in [QuestionKind::MultipleEach, QuestionKind::MultipleFraction] {
+        assert_eq!(
+            check_question(&build(kind, &[false, false])),
+            Err(QuestionRuleViolation::MultipleNeedsCorrect),
+            "{}: нет верного",
+            kind.as_str()
+        );
+        assert_eq!(
+            check_question(&build(kind, &[true])),
+            Err(QuestionRuleViolation::MultipleNeedsTwoOptions),
+            "{}: один вариант",
+            kind.as_str()
+        );
+        assert_eq!(
+            check_question(&build(kind, &[true, true, false])),
+            Ok(()),
+            "{}: допустимо",
+            kind.as_str()
+        );
+    }
+}
+
+#[test]
 fn free_text_must_not_have_options() {
     assert_eq!(check_question(&build(QuestionKind::FreeText, &[])), Ok(()), "без вариантов");
     let with_options = build(QuestionKind::FreeText, &[true]);

@@ -100,6 +100,14 @@ export function normalizeDecimal(input: string): string | null {
 	return value;
 }
 
+/** Процент с одним знаком: «66,7 %»; пусто — когда процента нет. */
+export function formatPercent(value: string | null | undefined): string {
+	if (value === null || value === undefined || value === '') return '';
+	const number = Number(value);
+	if (Number.isNaN(number)) return '';
+	return `${number.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} %`;
+}
+
 /** Склонение: plural(5, ['вопрос', 'вопроса', 'вопросов']). */
 export function plural(n: number, forms: [string, string, string]): string {
 	const mod10 = Math.abs(n) % 10;

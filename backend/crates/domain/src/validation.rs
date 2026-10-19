@@ -58,7 +58,10 @@ fn check_options(
     let violation = match kind {
         QuestionKind::FreeText => (total > 0).then_some(QuestionRuleViolation::FreeTextHasOptions),
         QuestionKind::Single => single_violation(total, correct),
-        QuestionKind::MultipleAll | QuestionKind::MultipleAny => multiple_violation(total, correct),
+        QuestionKind::MultipleAll
+        | QuestionKind::MultipleAny
+        | QuestionKind::MultipleEach
+        | QuestionKind::MultipleFraction => multiple_violation(total, correct),
     };
     violation.map_or(Ok(()), Err)
 }

@@ -74,6 +74,7 @@ pub(crate) struct ResultRow {
     pub attempt: AttemptRecord,
     pub number: usize,
     pub final_score: Option<Decimal>,
+    pub final_percent: Option<Decimal>,
 }
 
 /// Всё, что нужно таблице, CSV и статистике.
@@ -154,6 +155,7 @@ fn rows_for_student(
 ) -> Vec<ResultRow> {
     let scores: Vec<Decimal> = group.iter().map(|attempt| attempt.score).collect();
     let final_score = scoring::final_score(policy, &scores).map(|score| score.normalize());
+    let final_percent = final_percent(&group, policy);
     let chosen = match policy {
         FinalScorePolicy::Best => {
             scores.iter().enumerate().max_by_key(|(_, score)| **score).map(|(index, _)| index)
@@ -164,8 +166,28 @@ fn rows_for_student(
         .into_iter()
         .enumerate()
         .filter(|(index, _)| mode == AttemptsMode::All || Some(*index) == chosen)
-        .map(|(index, attempt)| ResultRow { attempt, number: index.saturating_add(1), final_score })
+        .map(|(index, attempt)| ResultRow {
+            attempt,
+            number: index.saturating_add(1),
+            final_score,
+            final_percent,
+        })
         .collect()
+}
+
+/// Итоговый процент студента по его сданным попыткам.
+fn final_percent(group: &[AttemptRecord], policy: FinalScorePolicy) -> Option<Decimal> {
+    let attempts: Vec<scoring::ScoreOfMax> =
+        group.iter().map(|attempt| (attempt.score, attempt.max_score)).collect();
+    scoring::final_percent(policy, &attempts).map(|percent| percent.normalize())
+}
+
+impl ResultRow {
+    /// Процент попытки от её максимума.
+    pub(crate) fn percent(&self) -> Option<Decimal> {
+        scoring::percent(self.attempt.score, self.attempt.max_score)
+            .map(|percent| percent.normalize())
+    }
 }
 
 /// Ячейка вопроса.

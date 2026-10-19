@@ -7,7 +7,7 @@
 	import Markdown from '$lib/components/app/Markdown.svelte';
 	import type { Schema } from '$lib/api/client';
 	import { formatScore } from '$lib/format';
-	import { KIND_SHORT } from './question-model';
+	import { KIND_SHORT, fromDetail, maxScore } from './question-model';
 
 	let {
 		question,
@@ -25,6 +25,9 @@
 				<span class="font-semibold">Вопрос {number}</span>
 				<Badge variant="secondary">{KIND_SHORT[question.kind]}</Badge>
 				<Badge variant="outline">вес {formatScore(question.weight)}</Badge>
+				{#if question.kind === 'multiple_each'}
+					<Badge variant="outline">макс. {formatScore(maxScore(fromDetail(question))?.toString())}</Badge>
+				{/if}
 			</div>
 			{#if actions}<div class="flex flex-wrap items-center gap-1">{@render actions()}</div>{/if}
 		</div>

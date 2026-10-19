@@ -35,6 +35,7 @@ struct DashRow {
     active_attempt_id: Option<Uuid>,
     last_submitted_id: Option<Uuid>,
     scores: Vec<Decimal>,
+    max_scores: Vec<Decimal>,
 }
 
 /// Тест на панели.
@@ -60,6 +61,9 @@ pub(crate) struct DashboardTest {
     /// Итоговый балл — если результаты уже можно смотреть.
     #[schema(value_type = Option<String>)]
     pub final_score: Option<Decimal>,
+    /// Итоговый процент — при тех же условиях, что и итоговый балл.
+    #[schema(value_type = Option<String>)]
+    pub final_percent: Option<Decimal>,
 }
 
 impl DashboardTest {
@@ -102,7 +106,9 @@ const DASHBOARD_QUERY: &str = "WITH mine AS (
             (SELECT a.id FROM attempts a WHERE a.test_id = mine.test_id AND a.user_id = $1 AND NOT a.is_preview AND a.submitted_at IS NOT NULL
              ORDER BY a.submitted_at DESC LIMIT 1) AS last_submitted_id,
             coalesce((SELECT array_agg(a.score ORDER BY a.submitted_at) FROM attempts a WHERE a.test_id = mine.test_id AND a.user_id = $1
-                      AND NOT a.is_preview AND a.submitted_at IS NOT NULL), '{}') AS scores
+                      AND NOT a.is_preview AND a.submitted_at IS NOT NULL), '{}') AS scores,
+            coalesce((SELECT array_agg(a.max_score ORDER BY a.submitted_at) FROM attempts a WHERE a.test_id = mine.test_id AND a.user_id = $1
+                      AND NOT a.is_preview AND a.submitted_at IS NOT NULL), '{}') AS max_scores
          FROM mine ORDER BY mine.course_title, mine.title";
 
 /// Доступные, запланированные, пройденные и пока закрытые тесты студента, его потоки.
@@ -132,6 +138,7 @@ pub(crate) async fn dashboard(
 struct LastResult {
     review: Option<ReviewAvailability>,
     final_score: Option<Decimal>,
+    final_percent: Option<Decimal>,
 }
 
 /// cancel-safe: yes — только чтение.
@@ -157,10 +164,16 @@ async fn last_result(
     let availability =
         review::availability(&mut connection, &test, &attempt, state.clock.now()).await?;
     let policy = FinalScorePolicy::parse(&row.final_policy).unwrap_or(FinalScorePolicy::Best);
+    let available = availability.available;
     let score = scoring::final_score(policy, &row.scores)
-        .filter(|_| availability.available)
+        .filter(|_| available)
         .map(|score| score.normalize());
-    Ok(LastResult { review: Some(availability), final_score: score })
+    let attempts: Vec<scoring::ScoreOfMax> =
+        row.scores.iter().copied().zip(row.max_scores.iter().copied()).collect();
+    let percent = scoring::final_percent(policy, &attempts)
+        .filter(|_| available)
+        .map(|percent| percent.normalize());
+    Ok(LastResult { review: Some(availability), final_score: score, final_percent: percent })
 }
 
 fn into_test(row: DashRow, last: LastResult) -> DashboardTest {
@@ -181,6 +194,7 @@ fn into_test(row: DashRow, last: LastResult) -> DashboardTest {
         last_submitted_attempt_id: row.last_submitted_id,
         review: last.review,
         final_score: last.final_score,
+        final_percent: last.final_percent,
     }
 }
 
@@ -224,5 +238,6 @@ fn clone_shallow(test: &DashboardTest) -> DashboardTest {
         last_submitted_attempt_id: test.last_submitted_attempt_id,
         review: None,
         final_score: test.final_score,
+        final_percent: test.final_percent,
     }
 }

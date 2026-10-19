@@ -18,7 +18,7 @@
 	} from '$lib/components/reports/table';
 	import { api, unwrap } from '$lib/api/client';
 	import { Resource } from '$lib/resource.svelte';
-	import { count, formatScore } from '$lib/format';
+	import { count, formatPercent, formatScore } from '$lib/format';
 
 	const courseId = $derived(page.params.id ?? '');
 
@@ -132,6 +132,9 @@
 													{:else}
 														<span class="font-medium">{formatScore(cell.final_score)}</span>
 														<span class="text-muted-foreground">/ {formatScore(cell.max_score)}</span>
+														{#if formatPercent(cell.final_percent)}
+															<div class="text-muted-foreground text-xs">{formatPercent(cell.final_percent)}</div>
+														{/if}
 														{#if cell.attempts > 1}
 															<div class="text-muted-foreground text-xs">
 																{count(cell.attempts, ['попытка', 'попытки', 'попыток'])}

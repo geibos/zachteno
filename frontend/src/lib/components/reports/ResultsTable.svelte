@@ -4,7 +4,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import SortHeader from './SortHeader.svelte';
-	import { formatDateTime, formatScore } from '$lib/format';
+	import { formatDateTime, formatPercent, formatScore } from '$lib/format';
 	import { submitReasonText } from '$lib/attempt/review-status';
 	import { cn } from '$lib/utils';
 	import {
@@ -43,10 +43,10 @@
 		return cell.in_attempt && (cell.selected.length > 0 || Boolean(cell.text_answer?.trim()));
 	}
 
-	function scoreTone(cell: ResultsCell, weight: string): string {
+	function scoreTone(cell: ResultsCell, maxScore: string): string {
 		if (cell.free_text || cell.score === null || cell.score === undefined) return '';
 		const score = Number(cell.score);
-		const max = Number(weight);
+		const max = Number(maxScore);
 		if (score >= max && max > 0) return 'text-emerald-700 dark:text-emerald-400';
 		if (score <= 0) return 'text-destructive';
 		return 'text-amber-700 dark:text-amber-400';
@@ -103,8 +103,13 @@
 					<td class="group-hover:bg-muted/50 border-b px-3 py-2 align-top whitespace-nowrap tabular-nums">
 						<span class="font-medium">{formatScore(row.score)}</span>
 						<span class="text-muted-foreground">/ {formatScore(row.max_score)}</span>
+						{#if formatPercent(row.percent)}
+							<div class="text-muted-foreground text-xs">{formatPercent(row.percent)}</div>
+						{/if}
 						{#if mode === 'all' && row.final_score !== null && row.final_score !== undefined}
-							<div class="text-muted-foreground text-xs">итог {formatScore(row.final_score)}</div>
+							<div class="text-muted-foreground text-xs">
+								итог {formatScore(row.final_score)}{#if formatPercent(row.final_percent)}&nbsp;· {formatPercent(row.final_percent)}{/if}
+							</div>
 						{/if}
 					</td>
 					<td class="group-hover:bg-muted/50 border-b px-3 py-2 align-top text-xs whitespace-nowrap">
@@ -134,7 +139,7 @@
 									{#if cell.free_text}
 										<span class="text-muted-foreground text-xs">не оценивается</span>
 									{:else}
-										<span class={cn('font-medium tabular-nums', scoreTone(cell, column.weight))}>
+										<span class={cn('font-medium tabular-nums', scoreTone(cell, column.max_score))}>
 											{formatScore(cell.score)}
 										</span>
 									{/if}

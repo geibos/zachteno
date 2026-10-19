@@ -491,3 +491,35 @@ async fn oversized_signal_body_is_rejected(db: PgPool) {
     let (status, _) = client.post("/api/signals", body).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "тело больше 64 КиБ");
 }
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn identical_partial_answers_count_as_matching_mistakes(db: PgPool) {
+    let state = testing::state(db);
+    let each = json!({ "kind": "multiple_each", "body": "?", "options": [
+        { "body": "а", "is_correct": true }, { "body": "б", "is_correct": true }, { "body": "в", "is_correct": false }] });
+    let mut room =
+        Classroom::with_questions(&state, &[each.clone(), each.clone(), each], json!({})).await;
+    let (mut other, other_id) = testing::register(&state, "twin@example.com").await;
+    let _joined = other.post(&format!("/api/invites/{}/join", room.invite_token), json!({})).await;
+    signal(&mut room.student, "marker-1", device("gpu-1")).await;
+    state.clock.advance(Duration::hours(3));
+    signal(&mut other, "marker-2", device("gpu-2")).await;
+    let mine = room.start().await;
+    let (_, started) =
+        other.post(&format!("/api/tests/{}/attempts", room.test_id), json!({})).await;
+    let theirs =
+        other.get(&format!("/api/attempts/{}", started["attempt_id"].as_str().unwrap())).await.1;
+    for (client, attempt) in [(&mut room.student, &mine), (&mut other, &theirs)] {
+        for index in 0..3 {
+            let (path, body) = testing::answer_many(attempt, index, &[0], 1);
+            let _saved = client.put(&path, body).await;
+        }
+        let _done = client
+            .post(&format!("/api/attempts/{}/submit", attempt["id"].as_str().unwrap()), json!({}))
+            .await;
+    }
+    assert!(
+        level(&state, room.student_id, other_id).await.is_some(),
+        "одинаковые неполные ответы (1 из 2) — совпадение ошибок"
+    );
+}

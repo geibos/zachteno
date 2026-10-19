@@ -4,6 +4,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use domain::layout::PlacedQuestion;
 use domain::review::{self, Context};
+use domain::scoring;
 use rust_decimal::Decimal;
 use serde::Serialize;
 use sqlx::{FromRow, PgConnection};
@@ -99,6 +100,9 @@ pub(crate) struct ReviewQuestion {
     pub image: Option<ImageRef>,
     #[schema(value_type = String)]
     pub weight: Decimal,
+    /// Балл за полностью верный ответ на этот вопрос.
+    #[schema(value_type = String)]
+    pub max_score: Decimal,
     /// Балл; `null` — свободный ответ («не оценивается»).
     #[schema(value_type = Option<String>)]
     pub score: Option<Decimal>,
@@ -115,6 +119,9 @@ pub(crate) struct ReviewView {
     pub score: Option<Decimal>,
     #[schema(value_type = String)]
     pub max_score: Decimal,
+    /// Процент от максимума — когда балл виден.
+    #[schema(value_type = Option<String>)]
+    pub percent: Option<Decimal>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub submitted_at: Option<OffsetDateTime>,
     pub submit_reason: Option<String>,
@@ -145,16 +152,23 @@ pub(crate) async fn get_review(
     let test = model::load_test(&mut *connection, attempt.test_id).await?;
     let available = availability(&mut connection, &test, &attempt, state.clock.now()).await?;
     let questions = review_questions(&mut connection, &attempt, &available).await?;
+    let score = attempt.score.filter(|_| available.available);
     Ok(Json(ReviewView {
         attempt_id,
         title: test.title,
-        score: attempt.score.filter(|_| available.available).map(|score| score.normalize()),
+        score: score.map(|shown| shown.normalize()),
         max_score: attempt.max_score.normalize(),
+        percent: shown_percent(score, attempt.max_score),
         submitted_at: attempt.submitted_at,
         submit_reason: attempt.submit_reason.clone(),
         availability: available,
         questions,
     }))
+}
+
+/// Процент попытки, если её балл виден студенту.
+fn shown_percent(score: Option<Decimal>, max_score: Decimal) -> Option<Decimal> {
+    scoring::percent(score?, max_score).map(|percent| percent.normalize())
 }
 
 fn ensure_submitted(attempt: &AttemptRow) -> ApiResult<()> {
@@ -202,6 +216,7 @@ fn review_question(
         body: question.body.clone(),
         image: question.image.clone(),
         weight: question.weight,
+        max_score: question.scored().max_score().normalize(),
         score: question
             .kind
             .is_scored()

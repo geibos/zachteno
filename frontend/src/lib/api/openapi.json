@@ -3053,7 +3053,8 @@
           "number",
           "body",
           "free_text",
-          "weight"
+          "weight",
+          "max_score"
         ],
         "properties": {
           "body": {
@@ -3061,6 +3062,10 @@
           },
           "free_text": {
             "type": "boolean"
+          },
+          "max_score": {
+            "type": "string",
+            "description": "Балл за полностью верный ответ на вопрос."
           },
           "number": {
             "type": "integer",
@@ -3415,6 +3420,13 @@
           },
           "description": {
             "type": "string"
+          },
+          "final_percent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Итоговый процент — при тех же условиях, что и итоговый балл."
           },
           "final_score": {
             "type": [
@@ -4211,6 +4223,8 @@
           "single",
           "multiple_all",
           "multiple_any",
+          "multiple_each",
+          "multiple_fraction",
           "free_text"
         ]
       },
@@ -4440,6 +4454,7 @@
           "choice",
           "body",
           "weight",
+          "max_score",
           "options"
         ],
         "properties": {
@@ -4462,6 +4477,10 @@
           "index": {
             "type": "integer",
             "minimum": 0
+          },
+          "max_score": {
+            "type": "string",
+            "description": "Балл за полностью верный ответ на этот вопрос."
           },
           "options": {
             "type": "array",
@@ -4507,6 +4526,13 @@
           },
           "max_score": {
             "type": "string"
+          },
+          "percent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Процент от максимума — когда балл виден."
           },
           "questions": {
             "type": "array",
@@ -4605,6 +4631,7 @@
           "id",
           "index",
           "choice",
+          "partial_credit",
           "body",
           "options"
         ],
@@ -4638,6 +4665,10 @@
             "items": {
               "$ref": "#/components/schemas/RunnerOption"
             }
+          },
+          "partial_credit": {
+            "type": "boolean",
+            "description": "Засчитывается частично. Говорит только о способе оценки, не о правильности."
           }
         }
       },
@@ -4911,6 +4942,12 @@
             "type": "integer",
             "format": "int64"
           },
+          "final_percent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "final_score": {
             "type": [
               "string",
@@ -5021,6 +5058,12 @@
           "email": {
             "type": "string"
           },
+          "final_percent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "final_score": {
             "type": [
               "string",
@@ -5029,6 +5072,13 @@
           },
           "max_score": {
             "type": "string"
+          },
+          "percent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Процент попытки от её максимума."
           },
           "removed": {
             "type": "boolean"

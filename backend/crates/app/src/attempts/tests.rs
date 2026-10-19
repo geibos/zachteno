@@ -188,6 +188,7 @@ async fn submit_scores_and_review_shows_after_submit(db: PgPool) {
     let (_, review) = room.student.get(&attempt_path(&attempt, "/review")).await;
     assert_eq!(review["score"], "1", "один верный из трёх: {review}");
     assert_eq!(review["max_score"], "3", "максимум 3");
+    assert_eq!(review["percent"], "33.3", "1 из 3");
     assert_eq!(review["questions"][1]["options"][0]["is_correct"], true, "правильный ответ виден");
 }
 
@@ -199,7 +200,9 @@ async fn never_policy_hides_everything_but_fact(db: PgPool) {
     let _done = room.student.post(&attempt_path(&attempt, "/submit"), json!({})).await;
     let (_, review) = room.student.get(&attempt_path(&attempt, "/review")).await;
     assert!(
-        review["score"].is_null() && review["questions"].as_array().is_some_and(Vec::is_empty),
+        review["score"].is_null()
+            && review["percent"].is_null()
+            && review["questions"].as_array().is_some_and(Vec::is_empty),
         "только факт сдачи: {review}"
     );
     assert!(review["submitted_at"].is_string(), "время сдачи есть");
@@ -239,6 +242,7 @@ async fn dashboard_reports_results_later(db: PgPool) {
     let completed = &dashboard["completed"][0];
     assert_eq!(completed["review"]["available"], false, "результаты позже: {dashboard}");
     assert!(completed["final_score"].is_null(), "балл скрыт до показа");
+    assert!(completed["final_percent"].is_null(), "процент скрыт до показа");
 }
 
 #[sqlx::test(migrator = "crate::database::MIGRATOR")]
@@ -343,4 +347,49 @@ async fn other_device_continues_same_attempt_with_answers_and_timer(db: PgPool) 
         "ответы те же"
     );
     assert_eq!(on_phone["answers"].as_array().map(Vec::len), Some(1), "сохранённый ответ на месте");
+}
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn partial_credit_scores_and_review_shows_question_max(db: PgPool) {
+    let state = testing::state(db);
+    let each = json!({ "kind": "multiple_each", "body": "?", "options": [
+        { "body": "а", "is_correct": true }, { "body": "б", "is_correct": true },
+        { "body": "в", "is_correct": true }, { "body": "г", "is_correct": false }] });
+    let fraction = json!({ "kind": "multiple_fraction", "body": "?", "weight": "3", "options": [
+        { "body": "а", "is_correct": true }, { "body": "б", "is_correct": true },
+        { "body": "в", "is_correct": true }, { "body": "опасно", "is_correct": false, "penalty": "-100" },
+        { "body": "д", "is_correct": false }, { "body": "е", "is_correct": false }] });
+    let mut room = Classroom::with_questions(
+        &state,
+        &[each, fraction, testing::single_question(0)],
+        json!({}),
+    )
+    .await;
+    let attempt = room.start().await;
+    let flags: Vec<Option<bool>> =
+        (0..3).map(|index| attempt["questions"][index]["partial_credit"].as_bool()).collect();
+    assert_eq!(flags, [Some(true), Some(true), Some(false)], "подсказка о частичном начислении");
+    assert!(
+        attempt["questions"][0]["options"][0].get("is_correct").is_none(),
+        "правильность не передаётся: {attempt}"
+    );
+    for (seq, (index, options)) in (1_i64..).zip([(0, vec![0, 1]), (1, vec![0, 1, 3])]) {
+        let (path, body) = testing::answer_many(&attempt, index, &options, seq);
+        let (saved, error) = room.student.put(&path, body).await;
+        assert!(saved.is_success(), "ответ: {error}");
+    }
+    let _done = room.student.post(&attempt_path(&attempt, "/submit"), json!({})).await;
+    let (_, review) = room.student.get(&attempt_path(&attempt, "/review")).await;
+    assert_eq!(review["max_score"], "7", "3 + 3 + 1: {review}");
+    assert_eq!(review["score"], "-96", "2 + (−98) + 0, без нижней границы");
+    assert_eq!(review["percent"], "-1371.4", "процент тоже отрицательный");
+    let (_, dashboard) = room.student.get("/api/dashboard").await;
+    assert_eq!(
+        dashboard["completed"][0]["final_percent"], "-1371.4",
+        "итоговый процент: {dashboard}"
+    );
+    assert_eq!(review["questions"][0]["score"], "2", "два верных из трёх");
+    assert_eq!(review["questions"][0]["max_score"], "3", "максимум вопроса — вес × число верных");
+    assert_eq!(review["questions"][1]["score"], "-98", "(2/3 − 100/3) × 3");
+    assert_eq!(review["questions"][1]["max_score"], "3", "максимум «доли верных» — вес");
 }

@@ -66,13 +66,14 @@ fn question_stat(report: &Results, number: usize, question: &QuestionDetail) -> 
     let given: Vec<&AnswerRecord> =
         answers.iter().flatten().copied().filter(|answer| is_given(answer)).collect();
     let scores: Vec<Decimal> = given.iter().filter_map(|answer| answer.score).collect();
+    let max_score = question.scored().max_score();
     QuestionStat {
         question_id: question.id,
         number,
         body: question.body.clone(),
         sample,
         answered: given.len(),
-        fully_correct: scores.iter().filter(|score| **score >= question.weight).count(),
+        fully_correct: scores.iter().filter(|score| **score >= max_score).count(),
         skipped: sample.saturating_sub(given.len()),
         average_score: average(question, &scores, sample),
         options: option_stats(question, &given),

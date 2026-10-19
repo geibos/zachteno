@@ -130,13 +130,19 @@ const IDENTICAL_TEXT: &str = "
       AND lower(regexp_replace(trim(a.text_answer), '\\s+', ' ', 'g')) = lower(regexp_replace(trim(b.text_answer), '\\s+', ' ', 'g'))
     GROUP BY b_at.user_id";
 
+/// Ошибка — ответ с баллом ниже максимума вопроса. Максимум считается так же,
+/// как `ScoredQuestion::max_score`: W × число верных в `multiple_each`, иначе W.
 const MATCHING_MISTAKES: &str = "
     WITH pairs AS (
       SELECT b_at.user_id AS other, a_at.test_id, count(*) AS same_wrong, max(b.saved_at) AS at
       FROM answers a JOIN attempts a_at ON a_at.id = a.attempt_id AND NOT a_at.is_preview AND a_at.submitted_at IS NOT NULL
+      JOIN questions q ON q.id = a.question_id
+      CROSS JOIN LATERAL (SELECT CASE WHEN q.kind = 'multiple_each'
+          THEN q.weight * (SELECT count(*) FROM options o WHERE o.question_id = q.id AND o.is_correct)
+          ELSE q.weight END AS max_score) m
       JOIN answers b ON b.question_id = a.question_id AND b.attempt_id <> a.attempt_id
       JOIN attempts b_at ON b_at.id = b.attempt_id AND NOT b_at.is_preview AND b_at.submitted_at IS NOT NULL AND b_at.user_id <> a_at.user_id
-      WHERE a_at.user_id = $1 AND $2 IS NOT NULL AND a.score <= 0 AND b.score <= 0
+      WHERE a_at.user_id = $1 AND $2 IS NOT NULL AND a.score < m.max_score AND b.score < m.max_score
         AND cardinality(a.selected_option_ids) > 0
         AND (SELECT array_agg(x ORDER BY x) FROM unnest(a.selected_option_ids) x) = (SELECT array_agg(y ORDER BY y) FROM unnest(b.selected_option_ids) y)
       GROUP BY b_at.user_id, a_at.test_id)

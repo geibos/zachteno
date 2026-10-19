@@ -18,11 +18,25 @@ pub enum QuestionKind {
     MultipleAll,
     /// Множественный выбор, режим «хотя бы один».
     MultipleAny,
+    /// Множественный выбор, режим «балл за каждый верный».
+    MultipleEach,
+    /// Множественный выбор, режим «доля верных».
+    MultipleFraction,
     /// Свободный ответ, не оценивается.
     FreeText,
 }
 
 impl QuestionKind {
+    /// Все типы вопросов.
+    pub const ALL: [Self; 6] = [
+        Self::Single,
+        Self::MultipleAll,
+        Self::MultipleAny,
+        Self::MultipleEach,
+        Self::MultipleFraction,
+        Self::FreeText,
+    ];
+
     /// Имя в базе и API.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -30,6 +44,8 @@ impl QuestionKind {
             Self::Single => "single",
             Self::MultipleAll => "multiple_all",
             Self::MultipleAny => "multiple_any",
+            Self::MultipleEach => "multiple_each",
+            Self::MultipleFraction => "multiple_fraction",
             Self::FreeText => "free_text",
         }
     }
@@ -37,9 +53,7 @@ impl QuestionKind {
     /// Разбор имени из базы.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
-        [Self::Single, Self::MultipleAll, Self::MultipleAny, Self::FreeText]
-            .into_iter()
-            .find(|kind| kind.as_str() == name)
+        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
     }
 
     /// Оценивается ли вопрос этого типа баллами.
@@ -48,12 +62,22 @@ impl QuestionKind {
         !matches!(self, Self::FreeText)
     }
 
+    /// Засчитывается ли ответ частично: режимы «балл за каждый верный» и «доля верных».
+    #[must_use]
+    pub const fn gives_partial_credit(self) -> bool {
+        matches!(self, Self::MultipleEach | Self::MultipleFraction)
+    }
+
     /// Штраф неверного варианта по умолчанию для вопроса с весом `weight`.
     #[must_use]
     pub fn default_penalty(self, weight: Decimal) -> Decimal {
         match self {
             Self::MultipleAny => Decimal::ZERO.saturating_sub(weight),
-            Self::Single | Self::MultipleAll | Self::FreeText => Decimal::ZERO,
+            Self::Single
+            | Self::MultipleAll
+            | Self::MultipleEach
+            | Self::MultipleFraction
+            | Self::FreeText => Decimal::ZERO,
         }
     }
 }
@@ -83,7 +107,8 @@ pub struct ScoredQuestion {
 }
 
 impl ScoredQuestion {
-    /// Балл за ответ `selected` (идентификаторы выбранных вариантов).
+    /// Балл за ответ `selected` (идентификаторы выбранных вариантов),
+    /// округлённый до двух знаков.
     ///
     /// Пустой ответ даёт 0. Неизвестные идентификаторы игнорируются.
     #[must_use]
@@ -91,19 +116,61 @@ impl ScoredQuestion {
         if !self.kind.is_scored() || selected.is_empty() {
             return Decimal::ZERO;
         }
-        self.base_score(selected).saturating_add(self.penalties(selected))
+        let picked_correct = Decimal::from(self.count_picked(selected, |option| option.is_correct));
+        let penalties = self.penalties(selected);
+        let raw = match self.kind {
+            QuestionKind::Single | QuestionKind::MultipleAll | QuestionKind::MultipleAny => {
+                self.base_score(selected).saturating_add(penalties)
+            }
+            QuestionKind::MultipleEach => {
+                self.weight.saturating_mul(picked_correct).saturating_add(penalties)
+            }
+            QuestionKind::MultipleFraction => self.fraction_score(picked_correct, penalties),
+            QuestionKind::FreeText => Decimal::ZERO,
+        };
+        raw.round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero)
     }
 
+    /// «Доля верных»: W × c / C + W × P / N.
+    fn fraction_score(&self, picked_correct: Decimal, penalties: Decimal) -> Decimal {
+        let correct = self.correct_count();
+        let wrong = Decimal::from(self.options.len().saturating_sub(correct));
+        share(self.weight.saturating_mul(picked_correct), Decimal::from(correct))
+            .saturating_add(share(self.weight.saturating_mul(penalties), wrong))
+    }
+
+    /// Балл за полностью верный ответ: W × число верных в режиме
+    /// «балл за каждый верный», W в остальных, 0 у свободного ответа.
+    #[must_use]
+    pub fn max_score(&self) -> Decimal {
+        match self.kind {
+            QuestionKind::MultipleEach => {
+                self.weight.saturating_mul(Decimal::from(self.correct_count()))
+            }
+            QuestionKind::Single
+            | QuestionKind::MultipleAll
+            | QuestionKind::MultipleAny
+            | QuestionKind::MultipleFraction => self.weight,
+            QuestionKind::FreeText => Decimal::ZERO,
+        }
+    }
+
+    fn correct_count(&self) -> usize {
+        self.options.iter().filter(|option| option.is_correct).count()
+    }
+
+    /// Балл «всё или ничего» для одиночного выбора и режимов «только все» и «хотя бы один».
     fn base_score(&self, selected: &[Uuid]) -> Decimal {
         let picked_correct = self.count_picked(selected, |option| option.is_correct);
         let picked_wrong = self.count_picked(selected, |option| !option.is_correct);
-        let total_correct = self.options.iter().filter(|option| option.is_correct).count();
         let earned = match self.kind {
             QuestionKind::Single | QuestionKind::MultipleAll => {
-                picked_correct == total_correct && picked_wrong == 0
+                picked_correct == self.correct_count() && picked_wrong == 0
             }
             QuestionKind::MultipleAny => picked_correct > 0,
-            QuestionKind::FreeText => false,
+            QuestionKind::MultipleEach
+            | QuestionKind::MultipleFraction
+            | QuestionKind::FreeText => false,
         };
         if earned { self.weight } else { Decimal::ZERO }
     }
@@ -126,20 +193,21 @@ impl ScoredQuestion {
     }
 }
 
-/// Максимальный балл набора вопросов: сумма весов оцениваемых вопросов.
-#[must_use]
-pub fn max_score(questions: &[ScoredQuestion]) -> Decimal {
-    questions
-        .iter()
-        .filter(|question| question.kind.is_scored())
-        .fold(Decimal::ZERO, |sum, question| sum.saturating_add(question.weight))
+/// `part / whole`; при пустом `whole` слагаемого нет.
+fn share(part: Decimal, whole: Decimal) -> Decimal {
+    part.checked_div(whole).unwrap_or(Decimal::ZERO)
 }
 
-/// Балл попытки: сумма баллов за вопросы, но не меньше нуля.
+/// Максимальный балл набора вопросов: сумма максимумов вопросов.
+#[must_use]
+pub fn max_score(questions: &[ScoredQuestion]) -> Decimal {
+    questions.iter().fold(Decimal::ZERO, |sum, question| sum.saturating_add(question.max_score()))
+}
+
+/// Балл попытки: сумма баллов за вопросы, может быть отрицательной.
 #[must_use]
 pub fn attempt_score(question_scores: &[Decimal]) -> Decimal {
-    let sum = question_scores.iter().fold(Decimal::ZERO, |acc, score| acc.saturating_add(*score));
-    sum.max(Decimal::ZERO)
+    question_scores.iter().fold(Decimal::ZERO, |acc, score| acc.saturating_add(*score))
 }
 
 /// Как выбирается итоговый балл из сданных попыток.
@@ -189,4 +257,45 @@ fn average(attempt_scores: &[Decimal]) -> Option<Decimal> {
     let sum = attempt_scores.iter().fold(Decimal::ZERO, |acc, score| acc.saturating_add(*score));
     sum.checked_div(count)
         .map(|mean| mean.round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero))
+}
+
+/// Балл попытки и её максимальный балл.
+pub type ScoreOfMax = (Decimal, Decimal);
+
+/// Процент балла `score` от максимума `max`, один знак после запятой.
+///
+/// Без положительного максимума (только свободные ответы) процента нет.
+#[must_use]
+pub fn percent(score: Decimal, max: Decimal) -> Option<Decimal> {
+    if max <= Decimal::ZERO {
+        return None;
+    }
+    score.saturating_mul(Decimal::ONE_HUNDRED).checked_div(max).map(round_percent)
+}
+
+fn round_percent(raw: Decimal) -> Decimal {
+    raw.round_dp_with_strategy(1, RoundingStrategy::MidpointAwayFromZero)
+}
+
+fn percent_of(attempt: Option<&ScoreOfMax>) -> Option<Decimal> {
+    let (score, max) = attempt?;
+    percent(*score, *max)
+}
+
+/// Итоговый процент по сданным попыткам `(балл, максимум)` в порядке сдачи.
+///
+/// «Лучшая» — процент попытки с лучшим баллом (та же, что у `final_score`),
+/// «последняя» — процент последней, «средняя» — среднее процентов попыток.
+#[must_use]
+pub fn final_percent(policy: FinalScorePolicy, attempts: &[ScoreOfMax]) -> Option<Decimal> {
+    match policy {
+        FinalScorePolicy::Best => percent_of(attempts.iter().max_by_key(|(score, _)| *score)),
+        FinalScorePolicy::Last => percent_of(attempts.last()),
+        FinalScorePolicy::Average => {
+            let percents: Vec<Decimal> =
+                attempts.iter().filter_map(|attempt| percent_of(Some(attempt))).collect();
+            let sum = percents.iter().fold(Decimal::ZERO, |acc, share| acc.saturating_add(*share));
+            sum.checked_div(Decimal::from(percents.len())).map(round_percent)
+        }
+    }
 }

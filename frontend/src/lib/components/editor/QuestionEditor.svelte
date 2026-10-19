@@ -14,15 +14,18 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { errorMessage } from '$lib/api/client';
+	import { formatScore } from '$lib/format';
 	import ImageField from './ImageField.svelte';
 	import MarkdownField from './MarkdownField.svelte';
 	import { selectClass } from './styles';
 	import {
 		KIND_HINTS,
 		KIND_LABELS,
+		PENALTY_HINTS,
 		changeKind,
 		emptyOption,
 		isMultiple,
+		maxScore,
 		validateDraft,
 		type QuestionDraft,
 		type QuestionKind
@@ -116,6 +119,11 @@
 				<div class="grid content-start gap-2">
 					<Label for="weight-{uid}">Вес</Label>
 					<Input id="weight-{uid}" inputmode="decimal" bind:value={draft.weight} placeholder="1" />
+					{#if draft.kind !== 'free_text'}
+						<p class="text-muted-foreground text-xs" data-testid="question-max">
+							макс. за вопрос: {formatScore(maxScore(draft)?.toString())}
+						</p>
+					{/if}
 				</div>
 			</div>
 
@@ -137,9 +145,7 @@
 					<legend class="mb-2 text-sm font-medium">Варианты ответа</legend>
 					<p class="text-muted-foreground -mt-1 text-xs">
 						{draft.kind === 'single' ? 'Отметьте один верный вариант.' : 'Отметьте все верные варианты.'}
-						Штраф — число ≤ 0 за выбор неверного варианта; пусто — по умолчанию
-						{draft.kind === 'multiple_any' ? '(−вес вопроса)' : '(0)'}. Закреплённый вариант не
-						перемешивается.
+						{PENALTY_HINTS[draft.kind]} Закреплённый вариант не перемешивается.
 					</p>
 					{#each draft.options as option, index (option.key)}
 						<div class="bg-muted/30 grid gap-3 rounded-lg border p-3">

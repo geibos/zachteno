@@ -428,6 +428,15 @@ pub(crate) fn single_question(correct: usize) -> Json {
 impl Classroom {
     /// Стенд с `questions` вопросами (верен вариант 0) и настройками `overrides`.
     pub(crate) async fn new(state: &AppState, questions: usize, overrides: Json) -> Self {
+        Self::with_questions(state, &vec![single_question(0); questions], overrides).await
+    }
+
+    /// Стенд с заданными вопросами (тела `QuestionInput`) и настройками `overrides`.
+    pub(crate) async fn with_questions(
+        state: &AppState,
+        questions: &[Json],
+        overrides: Json,
+    ) -> Self {
         let (mut methodist, methodist_id) = register(state, "metod@example.com").await;
         grant(state, methodist_id, "methodist").await;
         let course_id = id_of(methodist.post("/api/courses", json!({ "title": "ПДД" })).await);
@@ -455,8 +464,9 @@ impl Classroom {
 
     /// Ещё один опубликованный тест курса с открытым для потока окном.
     pub(crate) async fn another_test(&mut self, questions: usize, overrides: Json) -> String {
+        let singles = vec![single_question(0); questions];
         let test_id =
-            published_test(&mut self.methodist, &self.course_id, questions, &overrides).await;
+            published_test(&mut self.methodist, &self.course_id, &singles, &overrides).await;
         self.window_of(&test_id, json!({ "action": "open" })).await;
         test_id
     }
@@ -477,11 +487,11 @@ impl Classroom {
     }
 }
 
-/// Опубликованный тест курса с `questions` вопросами и настройками `overrides`.
+/// Опубликованный тест курса с вопросами `questions` и настройками `overrides`.
 async fn published_test(
     methodist: &mut Client,
     course_id: &str,
-    questions: usize,
+    questions: &[Json],
     overrides: &Json,
 ) -> String {
     let test_id = id_of(
@@ -489,9 +499,10 @@ async fn published_test(
             .post(&format!("/api/courses/{course_id}/tests"), json!({ "title": "Экзамен" }))
             .await,
     );
-    for _ in 0..questions {
-        let _added =
-            methodist.post(&format!("/api/tests/{test_id}/questions"), single_question(0)).await;
+    for question in questions {
+        let (added, body) =
+            methodist.post(&format!("/api/tests/{test_id}/questions"), question.clone()).await;
+        assert_eq!(added, StatusCode::CREATED, "вопрос: {body}");
     }
     let (configured, _) = methodist
         .patch(&format!("/api/tests/{test_id}"), json!({ "settings": settings(overrides) }))
@@ -533,12 +544,23 @@ pub(crate) fn id_of((status, body): (StatusCode, Json)) -> String {
 
 /// Ответ студента: первый вариант вопроса `index` попытки (`option` — какой по счёту в раскладке).
 pub(crate) fn answer_body(attempt: &Json, index: usize, option: usize, seq: i64) -> (String, Json) {
+    answer_many(attempt, index, &[option], seq)
+}
+
+/// Путь и тело сохранения ответа с несколькими вариантами `options` вопроса `index`.
+pub(crate) fn answer_many(
+    attempt: &Json,
+    index: usize,
+    options: &[usize],
+    seq: i64,
+) -> (String, Json) {
     let question = &attempt["questions"][index];
     let path = format!(
         "/api/attempts/{}/answers/{}",
         attempt["id"].as_str().unwrap(),
         question["id"].as_str().unwrap()
     );
-    let selected = question["options"][option]["id"].clone();
-    (path, json!({ "selected_option_ids": [selected], "client_seq": seq }))
+    let selected: Vec<Json> =
+        options.iter().map(|option| question["options"][*option]["id"].clone()).collect();
+    (path, json!({ "selected_option_ids": selected, "client_seq": seq }))
 }

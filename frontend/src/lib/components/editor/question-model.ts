@@ -28,10 +28,13 @@ export interface QuestionDraft {
 	options: OptionDraft[];
 }
 
+/** Порядок ключей — порядок пунктов в списке «Тип вопроса». */
 export const KIND_LABELS: Record<QuestionKind, string> = {
-	single: 'Одиночный выбор',
-	multiple_all: 'Множественный выбор: только полностью верный ответ',
-	multiple_any: 'Множественный выбор: частичный балл',
+	single: 'Один ответ',
+	multiple_all: 'Несколько: только все верные',
+	multiple_any: 'Несколько: хотя бы один верный',
+	multiple_each: 'Несколько: балл за каждый верный',
+	multiple_fraction: 'Несколько: доля верных',
 	free_text: 'Свободный ответ'
 };
 
@@ -39,6 +42,8 @@ export const KIND_SHORT: Record<QuestionKind, string> = {
 	single: 'один верный',
 	multiple_all: 'несколько верных, «только все»',
 	multiple_any: 'несколько верных, «хотя бы один»',
+	multiple_each: 'несколько верных, «балл за каждый»',
+	multiple_fraction: 'несколько верных, «доля верных»',
 	free_text: 'свободный ответ'
 };
 
@@ -47,8 +52,23 @@ export const KIND_HINTS: Record<QuestionKind, string> = {
 	multiple_all:
 		'Балл ставится, только если выбраны все верные варианты и ни одного неверного.',
 	multiple_any:
-		'Частичный балл: за верные варианты начисляется доля веса, за неверные — штраф (по умолчанию −вес).',
+		'Полный вес, если выбран хотя бы один верный вариант; за каждый выбранный неверный — штраф (по умолчанию −вес).',
+	multiple_each:
+		'Вес за каждый выбранный верный вариант; максимум — вес × число верных. Штраф выбранного неверного вычитается как есть.',
+	multiple_fraction:
+		'Доля веса: вес × выбранные верные ÷ все верные. Штраф выбранного неверного: вес × штраф ÷ число неверных.',
 	free_text: 'Студент пишет ответ текстом. Такой вопрос не оценивается автоматически.'
+};
+
+/** Как понимается штраф неверного варианта в каждом режиме; пусто — штраф по умолчанию. */
+export const PENALTY_HINTS: Record<QuestionKind, string> = {
+	single: 'Штраф — число ≤ 0 в баллах за выбор неверного варианта; пусто — 0.',
+	multiple_all: 'Штраф — число ≤ 0 в баллах за выбор неверного варианта; пусто — 0.',
+	multiple_any: 'Штраф — число ≤ 0 в баллах за выбор неверного варианта; пусто — −вес вопроса.',
+	multiple_each: 'Штраф — число ≤ 0 в баллах, вычитается как есть; пусто — 0.',
+	multiple_fraction:
+		'Штраф — число ≤ 0 в долях веса: снимается вес × штраф ÷ число неверных вариантов; пусто — 0.',
+	free_text: ''
 };
 
 let counter = 0;
@@ -94,7 +114,16 @@ export function fromDetail(question: Schema<'QuestionDetail'>): QuestionDraft {
 }
 
 export function isMultiple(kind: QuestionKind): boolean {
-	return kind === 'multiple_all' || kind === 'multiple_any';
+	return kind !== 'single' && kind !== 'free_text';
+}
+
+/** Балл за полностью верный ответ; `null` — свободный ответ или вес не число. */
+export function maxScore(draft: QuestionDraft): number | null {
+	const weight = Number(normalizeDecimal(draft.weight));
+	if (draft.kind === 'free_text' || !Number.isFinite(weight) || weight <= 0) return null;
+	if (draft.kind !== 'multiple_each') return weight;
+	const correct = draft.options.filter((option) => option.is_correct).length;
+	return Math.round(weight * correct * 100) / 100;
 }
 
 /** Ошибки черновика; пустой список — можно сохранять. */

@@ -16,7 +16,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { api, unwrap, type Schema } from '$lib/api/client';
 	import { Resource } from '$lib/resource.svelte';
-	import { formatDateTime, formatScore } from '$lib/format';
+	import { formatDateTime, formatPercent, formatScore } from '$lib/format';
 	import { reviewStatusText, submitReasonText } from '$lib/attempt/review-status';
 	import { cn } from '$lib/utils';
 
@@ -105,6 +105,9 @@
 										<p class="text-3xl font-semibold tabular-nums">
 											{formatScore(data.score)}
 											<span class="text-muted-foreground text-lg font-normal">из {formatScore(data.max_score)}</span>
+											{#if formatPercent(data.percent)}
+												<span class="text-muted-foreground text-lg font-normal">· {formatPercent(data.percent)}</span>
+											{/if}
 										</p>
 									</div>
 									<div class="text-muted-foreground grid gap-1 text-xs">
@@ -130,9 +133,9 @@
 												<Badge variant="outline">не оценивается</Badge>
 											{:else}
 												<Badge
-													variant={Number(q.score) >= Number(q.weight) ? 'default' : Number(q.score) > 0 ? 'secondary' : 'destructive'}
+													variant={Number(q.score) >= Number(q.max_score) ? 'default' : Number(q.score) > 0 ? 'secondary' : 'destructive'}
 												>
-													{formatScore(q.score)} из {formatScore(q.weight)}
+													{formatScore(q.score)} из {formatScore(q.max_score)}
 												</Badge>
 											{/if}
 										</div>

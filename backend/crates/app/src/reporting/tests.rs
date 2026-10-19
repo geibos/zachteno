@@ -194,3 +194,35 @@ async fn event_log_shows_when_question_seven_was_saved(db: PgPool) {
         "вкладка и связь в журнале"
     );
 }
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn partial_answer_is_not_fully_correct_in_stats(db: PgPool) {
+    let state = testing::state(db);
+    let each = json!({ "kind": "multiple_each", "body": "?", "options": [
+        { "body": "а", "is_correct": true }, { "body": "б", "is_correct": true },
+        { "body": "в", "is_correct": true }, { "body": "г", "is_correct": false }] });
+    let mut room = Classroom::with_questions(&state, &[each], json!({})).await;
+    let attempt = room.start().await;
+    let (path, body) = testing::answer_many(&attempt, 0, &[0, 1], 1);
+    let _saved = room.student.put(&path, body).await;
+    let _done = room
+        .student
+        .post(&format!("/api/attempts/{}/submit", attempt["id"].as_str().unwrap()), json!({}))
+        .await;
+    let (_, table) = room.methodist.get(&format!("/api/tests/{}/results", room.test_id)).await;
+    assert_eq!(table["columns"][0]["max_score"], "3", "максимум колонки: {table}");
+    assert_eq!(table["rows"][0]["max_score"], "3", "максимум попытки");
+    assert_eq!(table["rows"][0]["percent"], "66.7", "процент попытки");
+    assert_eq!(table["rows"][0]["final_percent"], "66.7", "итоговый процент");
+    let (_, summary) =
+        room.methodist.get(&format!("/api/courses/{}/summary", room.course_id)).await;
+    assert_eq!(summary["rows"][0]["cells"][0]["final_percent"], "66.7", "сводная: {summary}");
+    let (_, bytes) =
+        room.methodist.get_bytes(&format!("/api/tests/{}/results.csv", room.test_id)).await;
+    let csv = String::from_utf8(bytes).unwrap();
+    assert!(csv.contains("Процент") && csv.contains("Итог, %"), "колонки процента: {csv}");
+    assert!(csv.contains("66.7"), "процент в строке: {csv}");
+    let (_, stats) = room.methodist.get(&format!("/api/tests/{}/stats", room.test_id)).await;
+    assert_eq!(stats[0]["fully_correct"], 0, "2 из 3 — не полностью верно: {stats}");
+    assert_eq!(stats[0]["average_score"], "2", "средний балл учитывает частичный");
+}

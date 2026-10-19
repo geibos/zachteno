@@ -27,6 +27,9 @@ pub(crate) struct ColumnHeader {
     pub free_text: bool,
     #[schema(value_type = String)]
     pub weight: Decimal,
+    /// Балл за полностью верный ответ на вопрос.
+    #[schema(value_type = String)]
+    pub max_score: Decimal,
 }
 
 /// Строка таблицы.
@@ -49,8 +52,13 @@ pub(crate) struct TableRow {
     pub score: Decimal,
     #[schema(value_type = String)]
     pub max_score: Decimal,
+    /// Процент попытки от её максимума.
+    #[schema(value_type = Option<String>)]
+    pub percent: Option<Decimal>,
     #[schema(value_type = Option<String>)]
     pub final_score: Option<Decimal>,
+    #[schema(value_type = Option<String>)]
+    pub final_percent: Option<Decimal>,
     /// Есть ли значимые сигналы антифрода.
     pub antifraud: bool,
     pub cells: Vec<Cell>,
@@ -84,6 +92,7 @@ fn columns(questions: &[QuestionDetail]) -> Vec<ColumnHeader> {
             body: question.body.clone(),
             free_text: !question.kind.is_scored(),
             weight: question.weight,
+            max_score: question.scored().max_score().normalize(),
         })
         .collect()
 }
@@ -103,7 +112,9 @@ fn table_row(report: &Results, row: &ResultRow) -> TableRow {
         submit_reason: row.attempt.submit_reason.clone(),
         score: row.attempt.score.normalize(),
         max_score: row.attempt.max_score.normalize(),
+        percent: row.percent(),
         final_score: row.final_score,
+        final_percent: row.final_percent,
         antifraud: row.attempt.has_links,
         cells: report.cells(row),
     }
@@ -153,6 +164,8 @@ pub(crate) struct SummaryCell {
     pub final_score: Option<Decimal>,
     #[schema(value_type = Option<String>)]
     pub max_score: Option<Decimal>,
+    #[schema(value_type = Option<String>)]
+    pub final_percent: Option<Decimal>,
     pub attempts: i64,
 }
 
@@ -202,6 +215,7 @@ pub(crate) async fn course_summary(
 /// Итог студента по тесту для сводной таблицы.
 struct StudentFinal {
     final_score: Option<Decimal>,
+    final_percent: Option<Decimal>,
     max_score: Decimal,
     attempts: usize,
 }
@@ -252,6 +266,7 @@ async fn collect_finals(
                 (graded.attempt.user_id, test.test_id),
                 StudentFinal {
                     final_score: graded.final_score,
+                    final_percent: graded.final_percent,
                     max_score: graded.attempt.max_score,
                     attempts: graded.number,
                 },
@@ -270,6 +285,7 @@ fn summary_row(student: Student, tests: &[SummaryTest], finals: &Finals) -> Summ
                 test_id: test.test_id,
                 final_score: found.and_then(|cell| cell.final_score),
                 max_score: found.map(|cell| cell.max_score.normalize()),
+                final_percent: found.and_then(|cell| cell.final_percent),
                 attempts: found.map_or(0, |cell| i64::try_from(cell.attempts).unwrap_or(0)),
             }
         })

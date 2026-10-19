@@ -387,3 +387,25 @@ async fn image_keeps_private_cache_while_api_is_not_stored(db: PgPool) {
     let courses = owner.raw(Method::GET, "/api/courses").await;
     assert_eq!(cache(&courses), "no-store", "данные API не кешируются");
 }
+
+#[sqlx::test(migrator = "crate::database::MIGRATOR")]
+async fn partial_credit_modes_default_to_zero_penalty_and_publish(db: PgPool) {
+    let state = testing::state(db);
+    let (mut owner, _) = methodist(&state, "m@example.com").await;
+    let course_id = course(&mut owner).await;
+    let test_id = test_in(&mut owner, &course_id).await;
+    for kind in ["multiple_each", "multiple_fraction"] {
+        let question = json!({ "kind": kind, "body": "?", "weight": "2", "options": [
+            { "body": "а", "is_correct": true }, { "body": "б", "is_correct": true },
+            { "body": "в", "is_correct": false }] });
+        let (status, body) = owner.post(&format!("/api/tests/{test_id}/questions"), question).await;
+        assert_eq!(status, StatusCode::CREATED, "{kind}: {body}");
+    }
+    let (_, test) = owner.get(&format!("/api/tests/{test_id}")).await;
+    for (index, kind) in ["multiple_each", "multiple_fraction"].into_iter().enumerate() {
+        assert_eq!(test["questions"][index]["kind"], kind, "вид сохранён");
+        assert_eq!(test["questions"][index]["options"][2]["penalty"], "0", "{kind}: штраф 0");
+    }
+    let (published, error) = owner.post(&format!("/api/tests/{test_id}/publish"), json!({})).await;
+    assert_eq!(published, StatusCode::NO_CONTENT, "публикация: {error}");
+}

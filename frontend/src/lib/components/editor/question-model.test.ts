@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { changeKind, emptyDraft, toInput, validateDraft, type QuestionDraft } from './question-model';
+import {
+	changeKind,
+	emptyDraft,
+	isMultiple,
+	maxScore,
+	toInput,
+	validateDraft,
+	type QuestionDraft
+} from './question-model';
 
 function draft(patch: Partial<QuestionDraft> = {}): QuestionDraft {
 	const base = emptyDraft('single');
@@ -69,5 +77,40 @@ describe('toInput', () => {
 		d.options.forEach((o) => (o.is_correct = true));
 		const single = changeKind(d, 'single');
 		expect(single.options.filter((o) => o.is_correct)).toHaveLength(1);
+	});
+});
+
+describe('режимы частичного начисления', () => {
+	it('относятся к множественному выбору и проверяются по его правилам', () => {
+		for (const kind of ['multiple_each', 'multiple_fraction'] as const) {
+			expect(isMultiple(kind)).toBe(true);
+			const d = changeKind(draft(), kind);
+			d.options[1]!.is_correct = true;
+			expect(validateDraft(d)).toEqual([]);
+			d.options.forEach((o) => (o.is_correct = false));
+			expect(validateDraft(d)).toContain('Отметьте хотя бы один верный вариант.');
+		}
+	});
+
+	it('смена на «балл за каждый верный» сохраняет все верные', () => {
+		const d = draft({ kind: 'multiple_all' });
+		d.options.forEach((o) => (o.is_correct = true));
+		expect(changeKind(d, 'multiple_each').options.filter((o) => o.is_correct)).toHaveLength(2);
+	});
+});
+
+describe('максимум за вопрос', () => {
+	it('«балл за каждый верный» — вес × число верных', () => {
+		const d = changeKind(draft({ weight: '0,5' }), 'multiple_each');
+		d.options[1]!.is_correct = true;
+		d.options.push({ ...d.options[0]!, key: 'third', is_correct: true });
+		expect(maxScore(d)).toBe(1.5);
+	});
+
+	it('остальные режимы — вес, свободный ответ — нет', () => {
+		expect(maxScore(draft({ weight: '2' }))).toBe(2);
+		expect(maxScore(changeKind(draft({ weight: '2' }), 'multiple_fraction'))).toBe(2);
+		expect(maxScore(changeKind(draft(), 'free_text'))).toBeNull();
+		expect(maxScore(draft({ weight: 'abc' }))).toBeNull();
 	});
 });
