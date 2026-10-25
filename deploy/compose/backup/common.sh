@@ -20,11 +20,14 @@ require_backup_disk() {
   [ -f "$SENTINEL" ] || { echo "нет метки $SENTINEL" >&2; return 1; }
 }
 
-# Свободное место: не меньше 5% на основном диске и на диске бэкапов.
+# Свободное место: не меньше BACKUP_MIN_FREE_GB (по умолчанию 10 ГБ) на основном диске и на диске
+# бэкапов. Порог абсолютный, а не в процентах: на большом диске бэкапов 2% свободного — это
+# сотни гигабайт, а бэкап «Зачтено» весит мегабайты.
 require_free_space() {
+  local need=${BACKUP_MIN_FREE_GB:-10} target free
   for target in "$ZACHTENO_HOME" "$BACKUP_DATA_DIR"; do
-    used=$(df --output=pcent "$target" | tail -1 | tr -dc '0-9')
-    [ "$used" -le 95 ] || { echo "на диске с $target занято ${used}%" >&2; return 1; }
+    free=$(df --output=avail -B1G "$target" | tail -1 | tr -dc '0-9')
+    [ "$free" -ge "$need" ] || { echo "на диске с $target свободно ${free} ГБ, нужно не меньше ${need} ГБ (BACKUP_MIN_FREE_GB)" >&2; return 1; }
   done
 }
 
